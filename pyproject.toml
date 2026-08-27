@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "concept-normalisation"
+version = "0.1.0"
+description = "Uncertainty-aware clinical concept normalisation against SNOMED CT"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "numpy",
+    "pyarrow",
+    "torch",
+    "transformers",
+    "sentence-transformers",
+    "elasticsearch",
+    "ollama",
+    "neo4j",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
