@@ -50,15 +50,15 @@ MICRO_CSV_PATH = (
 
 SNOMED_ROOT_DIR = (
     DATA_DIR
-    / "SnomedCT_InternationalRF2_PRODUCTION_20260601T120000Z"
+    / "SnomedCT_InternationalRF2_PRODUCTION_20250901T120000Z"
 )
 
 SNOMED_TERMINOLOGY_DIR = SNOMED_ROOT_DIR / "Snapshot" / "Terminology"
 
-CONCEPT_FILE = SNOMED_TERMINOLOGY_DIR / "sct2_Concept_Snapshot_INT_20260601.txt"
-DESCRIPTION_FILE = SNOMED_TERMINOLOGY_DIR / "sct2_Description_Snapshot-en_INT_20260601.txt"
-DEFINITION_FILE = SNOMED_TERMINOLOGY_DIR / "sct2_TextDefinition_Snapshot-en_INT_20260601.txt"
-RELATIONSHIP_FILE = SNOMED_TERMINOLOGY_DIR / "sct2_Relationship_Snapshot_INT_20260601.txt"
+CONCEPT_FILE = SNOMED_TERMINOLOGY_DIR / "sct2_Concept_Snapshot_INT_20250901.txt"
+DESCRIPTION_FILE = SNOMED_TERMINOLOGY_DIR / "sct2_Description_Snapshot-en_INT_20250901.txt"
+DEFINITION_FILE = SNOMED_TERMINOLOGY_DIR / "sct2_TextDefinition_Snapshot-en_INT_20250901.txt"
+RELATIONSHIP_FILE = SNOMED_TERMINOLOGY_DIR / "sct2_Relationship_Snapshot_INT_20250901.txt"
 
 
 # ============================================================

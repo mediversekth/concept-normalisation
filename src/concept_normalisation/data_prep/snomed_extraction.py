@@ -71,6 +71,15 @@ class SnomedExtractor:
             columns={"conceptId": "concept_id", "term": "description"}
         ).drop_duplicates()
 
+        # Remove rows that cannot be embedded
+        short_terms = short_terms.dropna(
+            subset=["concept_id", "description"]
+        )
+        # Remove empty/whitespace-only descriptions
+        short_terms = short_terms[
+            short_terms["description"].str.strip().ne("")
+        ].reset_index(drop=True)
+
         short_terms.to_parquet(self.short_terms_out)
         print(f"Short terms (FSN+synonyms): {len(short_terms):,} rows")
 
@@ -90,6 +99,15 @@ class SnomedExtractor:
             definitions = definitions_raw[["conceptId", "term"]].rename(
                 columns={"conceptId": "concept_id", "term": "definition"}
             ).drop_duplicates()
+
+            # Remove rows that cannot be embedded
+            definitions = definitions.dropna(
+                subset=["concept_id", "definition"]
+            )
+            # Remove empty/whitespace-only descriptions
+            definitions = definitions[
+                definitions["definition"].str.strip().ne("")
+            ].reset_index(drop=True)
         else:
             print(f"No TextDefinition file found at {self.definition_file} -- check the path.")
             definitions = pd.DataFrame(columns=["concept_id", "definition"])

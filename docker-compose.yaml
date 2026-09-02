@@ -1,0 +1,33 @@
+services:
+  elastic:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.2
+    container_name: concept-norm-elastic
+    ports:
+      - "9200:9200"
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms2g -Xmx2g"
+    volumes:
+      - elastic_data:/usr/share/elasticsearch/data
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:2026.07.1
+    container_name: concept-norm-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      # Set the Neo4j authentication credentials
+      # format: username/password
+      NEO4J_AUTH: neo4j/conceptnorm
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    restart: unless-stopped
+
+volumes:
+  elastic_data:
+  neo4j_data:
+  neo4j_logs:
