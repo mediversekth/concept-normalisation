@@ -22,9 +22,26 @@ services:
       # Set the Neo4j authentication credentials
       # format: username/password
       NEO4J_AUTH: neo4j/conceptnorm
+
+      # Snomed Loader requires >= 4GB heap
+      NEO4J_server_memory_heap_initial__size: 4G
+      NEO4J_server_memory_heap_max__size: 4G
+
+      # Allow LOAD CSV access from anywhere in the container filesystem
+      NEO4J_server_directories_import: /
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
+
+      # Bind mount the local directory to the container's import directory
+      # Has to match the path on the local file system, e.g.
+      # Linux/Mac: /var/tmp/some-output-folder:/var/tmp/some-output-folder
+      # Windows: C:/repos/concept-normalisation/data/neo4j-output:/C:/repos/concept-normalisation/data/neo4j-output
+      # Note: the syntax is hostPath:containerPath, and the containerPath must be an absolute path.
+      - type: bind
+        source: C:/repos/concept-normalisation/data/neo4j-output
+        target: /C:/repos/concept-normalisation/data/neo4j-output
+
     restart: unless-stopped
 
 volumes:

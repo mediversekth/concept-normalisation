@@ -1,6 +1,6 @@
-# Toolkit for concept normalisation 
+# Toolkit for concept normalisation
 
-One of the processes in a data harmonisation pipeline and currently a bottleneck, concept normalisation or entity linking solves mapping a local code or string to a concept in a terminology system (e.g., SNOMED, LOINC). 
+One of the processes in a data harmonisation pipeline and currently a bottleneck, concept normalisation or entity linking solves mapping a local code or string to a concept in a terminology system (e.g., SNOMED, LOINC).
 
 # concept-normalisation
 
@@ -12,11 +12,13 @@ consensus step.
 Methods implemented:
 
 **Semantic**
+
 1. SapBERT — query text only
 2. BioLORD — query + context columns
 3. LLM (Ollama) generated context + BioLORD
 
 **Syntactic**
+
 4. Elasticsearch multi-match (BM25)
 5. Elasticsearch fuzzy matching
 6. Character n-gram Jaccard similarity (no external services needed)
@@ -29,6 +31,8 @@ pip install -e .
 
 This installs the `concept_normalisation` package.
 
+You might have to manually install torch libraries to get correct GPU packages.
+
 ## Data layout
 
 The pipeline expects a `data/` directory (by default, next to wherever you
@@ -36,9 +40,10 @@ run it from) containing:
 
 ```
 data/
-  diagnosis_icd10_snomed.csv                 # your input table
+  diagnosis_icd10_snomed.csv                  # your input table
   SnomedCT_InternationalRF2_.../              # a SNOMED CT RF2 release
   output/                                     # created automatically
+  neo4j-output/                               # Has to be created manually, for loading SNOMED data into neo4j
 ```
 
 To point at a data directory somewhere else (e.g. `/data`), set:
@@ -51,31 +56,69 @@ Elasticsearch and Neo4j URLs default to localhost; override with
 `CONCEPT_NORM_ELASTIC_URL`, `CONCEPT_NORM_NEO4J_URI`,
 `CONCEPT_NORM_NEO4J_USER`, `CONCEPT_NORM_NEO4J_PASSWORD` if needed.
 
-## First run: build the SNOMED candidate data
+## First run
+
+### Requirements
+
+- [Docker](https://docs.docker.com/desktop/)
+- Docker Compose (Comes with Docker Desktop)
+- [Python](https://www.python.org/downloads/)
+- [Ollama](https://ollama.com/download)
+
+### build the SNOMED candidate data
 
 Before running the pipeline, the SNOMED RF2 release needs to be extracted
 into the parquet files the matchers read, and those candidates need to be
 embedded:
 
-```python
-from concept_normalisation.data_prep.snomed_extraction import SnomedExtractor
-from concept_normalisation.semantic_matching.embedding.sapbert_embedder import SapBertEmbedder
-from concept_normalisation.semantic_matching.embedding.biolord_embedder import BioLordEmbedder
-from concept_normalisation import config
-
-extractor = SnomedExtractor()
-extractor.run()  # writes short terms + definitions parquet
-extractor.extract_isa_relationships()  # writes the is-a hierarchy parquet
-
-SapBertEmbedder().embed_parquet_chunked(config.SHORT_TERMS_PARQUET)
-
-biolord = BioLordEmbedder()
-biolord.embed_short_terms(config.SHORT_TERMS_PARQUET)
-biolord.embed_definitions(config.DEFINITIONS_PARQUET)
+```bash
+python prepare_snomed.py
 ```
 
 This is a one-off step per SNOMED release — the parquet/embedding files it
 produces are reused by every pipeline run after that.
+
+### Start Neo4J and ElasticSearch
+
+Before following steps, we need to start Neo4J and ElasticSearch engine. There is already a configured docker compose file which can be started by running:
+
+**NOTE:** Adjust the path under Neo4J volumes to match the location of your `neo4j-output` folder. This is an absolute path and it has to be the same both inside and outside the container.
+
+```bash
+docker compose up -d
+```
+
+The docker compose file is configured for persistent storage, so doing `docker compose down` will not remove data that has been loaded into neo4j or elasticsearch. One can simply rerun `docker compose up -d` if you want to run the Neo4J and ElasticSearch instances with all the data still there.
+
+### Load data into ElasticSearch
+
+```bash
+python populate_elastic.py
+```
+
+### Load data into Neo4J
+
+The SNOMED loader for Neo4J exists [here](https://github.com/IHTSDO/snomed-database-loader/tree/master/NEO4J).
+
+This step requires you to go to the location where you cloned the repository then into the `NEO4J` folder. Subsequently, run the following command with the placeholders replaced with actual values:
+
+```bash
+python snomed_g_graphdb_build_tools.py db_build --action create --rf2 <rf2-release-directory> --release_type full --neopw <password> --output_dir <output-directory-path>
+```
+
+The following is an example command, how it should look. _IMPORTANT:_ The `neo4j-output` folder path must match that described in the docker compose file.
+
+```bash
+python snomed_g_graphdb_build_tools.py db_build --action create --rf2 C:\repos\concept-normalisation\data\SnomedCT_InternationalRF2_PRODUCTION_20250901T120000Z\Full\ --release_type full --neopw conceptnorm --output_dir C:\repos\concept-normalisation\data\neo4j-output\
+```
+
+### Before running the pipeline
+
+Finally, before running the pipeline you must install and run the corresponding ollama model described [here](src/concept_normalisation/config.py). Default would be:
+
+```bash
+ollama run llama3.1
+```
 
 ## Running the pipeline
 
@@ -110,11 +153,11 @@ to force a full rerun.
 
 All written to `data/output/`:
 
-| File | Contents |
-| --- | --- |
-| `semantic_data_mapped_full.parquet` | every row with all methods' matches |
-| `method_comparison.parquet` | one row per query, top match per method side by side |
-| `final_candidates.parquet` | hierarchy-aware consensus candidates |
+| File                                | Contents                                             |
+| ----------------------------------- | ---------------------------------------------------- |
+| `semantic_data_mapped_full.parquet` | every row with all methods' matches                  |
+| `method_comparison.parquet`         | one row per query, top match per method side by side |
+| `final_candidates.parquet`          | hierarchy-aware consensus candidates                 |
 
 ## Package layout
 
