@@ -1,5 +1,15 @@
+import sys
+from pathlib import Path
+
+# Allow this script to be run directly from the repository root with:
+# python scripts/populate_elastic.py
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from concept_normalisation.data_prep.snomed_extraction import SnomedExtractor
 from concept_normalisation.syntactic_matching.elastic_bm25 import ElasticBM25Index
+
 
 def main():
     print("Preparing SNOMED documents...")

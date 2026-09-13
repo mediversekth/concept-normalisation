@@ -18,6 +18,8 @@ dependencies = [
     "elasticsearch",
     "ollama",
     "neo4j",
+    "neo4j-graphrag[ollama]",
+    "tqdm",
 ]
 
 [project.optional-dependencies]

@@ -65,6 +65,8 @@ Elasticsearch and Neo4j URLs default to localhost; override with
 - [Python](https://www.python.org/downloads/)
 - [Ollama](https://ollama.com/download)
 
+**NOTE:** Run following python scripts from repository root.
+
 ### build the SNOMED candidate data
 
 Before running the pipeline, the SNOMED RF2 release needs to be extracted
@@ -72,7 +74,7 @@ into the parquet files the matchers read, and those candidates need to be
 embedded:
 
 ```bash
-python prepare_snomed.py
+python scripts\prepare_snomed.py
 ```
 
 This is a one-off step per SNOMED release — the parquet/embedding files it
@@ -93,7 +95,7 @@ The docker compose file is configured for persistent storage, so doing `docker c
 ### Load data into ElasticSearch
 
 ```bash
-python populate_elastic.py
+python scripts\prepare_elastic.py
 ```
 
 ### Load data into Neo4J
@@ -110,6 +112,69 @@ The following is an example command, how it should look. _IMPORTANT:_ The `neo4j
 
 ```bash
 python snomed_g_graphdb_build_tools.py db_build --action create --rf2 C:\repos\concept-normalisation\data\SnomedCT_InternationalRF2_PRODUCTION_20250901T120000Z\Full\ --release_type full --neopw conceptnorm --output_dir C:\repos\concept-normalisation\data\neo4j-output\
+```
+
+### Prepare the loaded Neo4j graph for GraphRAG retrieval
+
+After loading SNOMED CT into Neo4j, enrich the active `ObjectConcept` nodes with:
+
+- `search_terms`: the FSN and active English synonyms used for full-text retrieval.
+- `embedding_text`: the FSN, synonyms, and TextDefinition when available.
+- `embedding`: normalized BioLORD embeddings used for vector retrieval.
+
+The existing Neo4j nodes and relationships remain intact. The TextDefinition file, BioLORD model, Neo4j connection, index names, and batch sizes are configured in `concept_normalisation/config.py`.
+
+Run the script from the repository root:
+
+```bash
+python scripts/prepare_neo4j_graphrag.py
+```
+
+The script automatically uses CUDA when available, followed by Apple MPS and then CPU.
+
+The process is resumable because nodes with an existing `embedding` property are skipped. To rebuild the retrieval properties and embeddings for every active concept, use:
+
+```bash
+python scripts/prepare_neo4j_graphrag.py --force
+```
+
+The script creates the following Neo4j indexes:
+
+- `snomed_concept_fulltext` for full-text retrieval using `search_terms`.
+- `snomed_concept_embeddings` for cosine vector retrieval using `embedding`.
+
+Useful Neo4j Browser inspection queries:
+
+```cypher
+MATCH (c:ObjectConcept)
+WHERE c.active = true OR toString(c.active) = '1'
+RETURN count(c) AS active,
+       count(c.search_terms) AS fulltext_ready,
+       count(c.embedding_text) AS vector_text_ready,
+       count(c.embedding) AS vector_ready;
+```
+
+```cypher
+SHOW INDEXES YIELD name, type, state, options
+WHERE name IN [
+    'snomed_concept_fulltext',
+    'snomed_concept_embeddings'
+]
+RETURN name, type, state, options;
+```
+
+```cypher
+CALL db.index.fulltext.queryNodes(
+    'snomed_concept_fulltext',
+    'heart attack'
+)
+YIELD node, score
+RETURN node.sctid,
+       node.FSN,
+       node.search_terms,
+       score
+ORDER BY score DESC
+LIMIT 10;
 ```
 
 ### Before running the pipeline

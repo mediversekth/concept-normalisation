@@ -115,6 +115,10 @@ SAPBERT_MODEL_NAME = "cambridgeltl/SapBERT-from-PubMedBERT-fulltext"
 BIOLORD_MODEL_NAME = "FremyCompany/BioLORD-2023"
 OLLAMA_MODEL_NAME = "llama3.1"
 
+# Neo4j GraphRAG enrichment
+GRAPHRAG_EMBEDDING_MODEL_NAME = BIOLORD_MODEL_NAME
+GRAPHRAG_FULLTEXT_INDEX_NAME = "snomed_concept_fulltext"
+GRAPHRAG_VECTOR_INDEX_NAME = "snomed_concept_embeddings"
 
 # ============================================================
 # Batch sizes
@@ -124,6 +128,9 @@ DEFAULT_SAPBERT_BATCH_SIZE = 32
 DEFAULT_BIOLORD_BATCH_SIZE = 64
 DEFAULT_QUERY_BATCH_SIZE = 50
 
+GRAPHRAG_FETCH_BATCH_SIZE = 2000
+GRAPHRAG_EMBEDDING_BATCH_SIZE = 256
+GRAPHRAG_WRITE_BATCH_SIZE = 500
 
 # ============================================================
 # Matching defaults
@@ -152,6 +159,7 @@ PREPROCESS_REMOVE_STOPWORDS = False
 ELASTIC_URL = os.environ.get("CONCEPT_NORM_ELASTIC_URL", "http://localhost:9200")
 ELASTIC_INDEX_NAME = "snomed"
 
+NEO4J_DATABASE = os.environ.get("CONCEPT_NORM_NEO4J_DATABASE", "neo4j")
 NEO4J_URI = os.environ.get("CONCEPT_NORM_NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.environ.get("CONCEPT_NORM_NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ.get("CONCEPT_NORM_NEO4J_PASSWORD", "")
