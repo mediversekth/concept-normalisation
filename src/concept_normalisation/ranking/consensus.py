@@ -51,6 +51,11 @@ DEFAULT_METHOD_COLUMNS = {
         "concept_id",
         "term",
     ),
+    "algorithm_graphrag": (
+        "algorithm_graphrag_matches",
+        "sctid",
+        "fsn",
+    ),
 }
 
 

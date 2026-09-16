@@ -43,12 +43,13 @@ def build_comparison_table(semantic_data: pd.DataFrame, query_column: str = "tes
     Expects these columns to already exist on semantic_data -- this is the
     naming pipeline/semantic.py and pipeline/syntactic.py (and
     evaluation/consensus.py's DEFAULT_METHOD_COLUMNS) actually produce:
-      - algorithm_1_matches      (SapBERT, run_algorithm_1)
-      - algorithm_2_matches      (BioLORD, run_algorithm_2)
-      - algorithm_ai_matches     (BioLORD on AI-generated context, run_algorithm_ai -- optional)
-      - multi_match_matches      (Elasticsearch multi-match/BM25)
-      - elastic_fuzzy_matches    (Elasticsearch fuzzy full-text)
-      - jaccard_matches          (JaccardMatcher)
+      - algorithm_1_matches         (SapBERT, run_algorithm_1)
+      - algorithm_2_matches         (BioLORD, run_algorithm_2)
+      - algorithm_ai_matches        (BioLORD on AI-generated context, run_algorithm_ai -- optional)
+      - multi_match_matches         (Elasticsearch multi-match/BM25)
+      - elastic_fuzzy_matches       (Elasticsearch fuzzy full-text)
+      - jaccard_matches             (JaccardMatcher)
+      - algorithm_graphrag_matches  (GraphRAGMatcher)
     """
 
     rows = []
@@ -72,6 +73,10 @@ def build_comparison_table(semantic_data: pd.DataFrame, query_column: str = "tes
 
         jaccard_id, jaccard_text, jaccard_score = _top_match(
             row.get("jaccard_matches", []), "concept_id", "term", "jaccard_score",
+        )
+
+        graphrag_id, graphrag_text, graphrag_score = _top_match(
+            row.get("algorithm_graphrag_matches", []), "sctid", "fsn", "score"
         )
 
         rows.append({
@@ -100,6 +105,10 @@ def build_comparison_table(semantic_data: pd.DataFrame, query_column: str = "tes
             "jaccard_concept_id": jaccard_id,
             "jaccard_match": jaccard_text,
             "jaccard_score": jaccard_score,
-                    })
+
+            "algorithm_graphrag_concept_id": graphrag_id, 
+            "algorithm_graphrag_match": graphrag_text, 
+            "algorithm_graphrag_score": graphrag_score, 
+        })
 
     return pd.DataFrame(rows)

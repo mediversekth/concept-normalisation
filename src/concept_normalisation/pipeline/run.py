@@ -30,6 +30,7 @@ import pandas as pd
 from concept_normalisation import config
 from concept_normalisation.data_prep.context_builder import build_semantic_inputs
 from concept_normalisation.pipeline.evaluation import run_comparison, run_consensus
+from concept_normalisation.pipeline.graphrag import run_graphrag
 from concept_normalisation.pipeline.semantic import (
     run_algorithm_1,
     run_algorithm_2,
@@ -56,6 +57,7 @@ from concept_normalisation.syntactic_matching.fuzzy_matcher import JaccardMatche
 from concept_normalisation.syntactic_matching.text_preprocessing import (
     TextPreprocessor,
 )
+from concept_normalisation.graphrag.graphrag_matcher import GraphRAGMatcher
 
 
 @dataclass
@@ -78,6 +80,8 @@ class ExperimentConfig:
     sapbert_model: str = config.SAPBERT_MODEL_NAME
     biolord_model: str = config.BIOLORD_MODEL_NAME
     ollama_model: str = config.OLLAMA_MODEL_NAME
+    graphrag_embedding_model: str = config.GRAPHRAG_EMBEDDING_MODEL_NAME
+    graphrag_model: str = config.GRAPHRAG_LLM_MODEL_NAME
 
     # --- Which methods to run ---
     run_semantic_algorithm_1: bool = True
@@ -91,6 +95,11 @@ class ExperimentConfig:
     run_syntactic_fuzzy: bool = True
     run_syntactic_jaccard: bool = True
 
+    # Neo4j must be running at config.NEO4J_URI for this one.
+    # Enrichment script (see scripts and README) must have been run to enrich the SNOMED concepts.
+    run_graphrag_algorithm: bool = True
+    graphrag_top_k: int = config.GRAPHRAG_DEFAULT_TOP_K
+    
     run_evaluation: bool = True
     run_final_consensus: bool = True
 
@@ -137,6 +146,8 @@ def run_pipeline(cfg: ExperimentConfig | None = None) -> pd.DataFrame:
     data = _stage_algorithm_ai(cfg, data, biolord_embedder, biolord_index)
 
     data = _stage_syntactic_matching(cfg, data)
+
+    data = _stage_graphrag_matching(cfg, data)
 
     data = _stage_save_results(cfg, data)
 
@@ -365,7 +376,6 @@ def _stage_algorithm_ai(
     _checkpoint(cfg, data, "SEMANTIC ALGORITHM AI")
     return data
 
-
 # ============================================================
 # Stage 6: syntactic matching (multi-match, fuzzy, jaccard)
 # ============================================================
@@ -451,9 +461,54 @@ def _stage_syntactic_matching(cfg: ExperimentConfig, data: pd.DataFrame) -> pd.D
 
     return data
 
+# ============================================================
+# Stage 7: graphrag matching (Neo4j + Ollama + BioLORD)
+# ============================================================
+
+def _stage_graphrag_matching(cfg: ExperimentConfig, data: pd.DataFrame) -> pd.DataFrame:
+    output_column = "algorithm_graphrag_matches"
+
+    if not cfg.run_graphrag_algorithm:
+        return data
+
+    # Finished only if column exists AND every row has a result
+    complete = (
+        output_column in data.columns
+        and data[output_column].notna().all()
+    )
+
+    if complete:
+        print(
+            "\nalgorithm_graphrag_matches already complete "
+            "in checkpoint, skipping GRAPHRAG ALGORITHM"
+        )
+        return data
+
+    print("\n========================================")
+    print("GRAPHRAG ALGORITHM")
+    print("Neo4j + Ollama + BioLORD")
+    print("========================================")
+
+    matcher = GraphRAGMatcher(
+        embedding_model=cfg.graphrag_embedding_model,
+        llm_model=cfg.graphrag_model,
+    )
+        
+    data = run_graphrag(
+        data=data,
+        matcher=matcher,
+        text_column=cfg.query_column,
+        output_column="algorithm_graphrag_matches",
+        top_k=cfg.graphrag_top_k,
+        checkpoint_path=cfg.checkpoint_path,
+    )
+
+    _checkpoint(cfg, data, "GRAPHRAG ALGORITHM")
+    return data
+
 
 # ============================================================
-# Stage 7: save combined results
+# Stage 8: save combined results
 # ============================================================
 
 def _stage_save_results(cfg: ExperimentConfig, data: pd.DataFrame) -> pd.DataFrame:
@@ -473,7 +528,7 @@ def _stage_save_results(cfg: ExperimentConfig, data: pd.DataFrame) -> pd.DataFra
 
 
 # ============================================================
-# Stage 8: method comparison
+# Stage 9: method comparison
 # ============================================================
 
 def _stage_comparison(cfg: ExperimentConfig, data: pd.DataFrame) -> pd.DataFrame:
@@ -491,7 +546,7 @@ def _stage_comparison(cfg: ExperimentConfig, data: pd.DataFrame) -> pd.DataFrame
 
 
 # ============================================================
-# Stage 9: final hierarchy-aware consensus
+# Stage 10: final hierarchy-aware consensus
 # ============================================================
 
 def _stage_consensus(cfg: ExperimentConfig, data: pd.DataFrame) -> pd.DataFrame:
