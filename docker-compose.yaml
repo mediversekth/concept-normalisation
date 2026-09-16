@@ -29,18 +29,14 @@ services:
 
       # Allow LOAD CSV access from anywhere in the container filesystem
       NEO4J_server_directories_import: /
+
+      NEO4J_OUTPUT_PATH: ${NEO4J_OUTPUT_PATH}
+      EXTENSION_SCRIPT: /setup-path.sh
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
-
-      # Bind mount the local directory to the container's import directory
-      # Has to match the path on the local file system, e.g.
-      # Linux/Mac: /var/tmp/some-output-folder:/var/tmp/some-output-folder
-      # Windows: C:/repos/concept-normalisation/data/neo4j-output:/C:/repos/concept-normalisation/data/neo4j-output
-      # Note: the syntax is hostPath:containerPath, and the containerPath must be an absolute path.
-      - type: bind
-        source: C:/repos/concept-normalisation/data/neo4j-output
-        target: /C:/repos/concept-normalisation/data/neo4j-output
+      - neo4j_output:/neo4j-output
+      - ./setup-path.sh:/setup-path.sh:ro
 
     restart: unless-stopped
 
@@ -48,3 +44,10 @@ volumes:
   elastic_data:
   neo4j_data:
   neo4j_logs:
+
+  neo4j_output:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: "${NEO4J_OUTPUT_PATH}"

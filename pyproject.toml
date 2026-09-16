@@ -20,6 +20,7 @@ dependencies = [
     "neo4j",
     "neo4j-graphrag[ollama]",
     "tqdm",
+    "ipykernel",
 ]
 
 [project.optional-dependencies]

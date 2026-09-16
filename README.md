@@ -23,6 +23,10 @@ Methods implemented:
 5. Elasticsearch fuzzy matching
 6. Character n-gram Jaccard similarity (no external services needed)
 
+**Semantic + Syntactic**
+
+7. GraphRAG
+
 ## Install
 
 ```bash
@@ -84,7 +88,7 @@ produces are reused by every pipeline run after that.
 
 Before following steps, we need to start Neo4J and ElasticSearch engine. There is already a configured docker compose file which can be started by running:
 
-**NOTE:** Adjust the path under Neo4J volumes to match the location of your `neo4j-output` folder. This is an absolute path and it has to be the same both inside and outside the container.
+**NOTE:** Adjust the path under Neo4J volumes to match the location of your `neo4j-output` folder. This is an absolute path and it has to be the same both inside and outside the container. Note that some versions of docker compose struggle with colons, so if you are on a system that uses colons in the disk name or similar, you may need to remove that part.
 
 ```bash
 docker compose up -d
@@ -100,7 +104,7 @@ python scripts\prepare_elastic.py
 
 ### Load data into Neo4J
 
-The SNOMED loader for Neo4J exists [here](https://github.com/IHTSDO/snomed-database-loader/tree/master/NEO4J).
+The SNOMED loader for Neo4J exists [here](https://github.com/IHTSDO/snomed-database-loader/tree/master/).
 
 This step requires you to go to the location where you cloned the repository then into the `NEO4J` folder. Subsequently, run the following command with the placeholders replaced with actual values:
 
