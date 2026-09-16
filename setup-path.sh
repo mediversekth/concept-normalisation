@@ -1,13 +1,13 @@
 #!/bin/sh
 
-case "$NEO4J_OUTPUT_PATH" in
+case "$PATH_TO_NEO4J_OUTPUT" in
   /*)
     # Linux / macOS
-    TARGET="$NEO4J_OUTPUT_PATH"
+    TARGET="$PATH_TO_NEO4J_OUTPUT"
     ;;
   *)
     # Windows, e.g. C:/repos/...
-    TARGET="/$NEO4J_OUTPUT_PATH"
+    TARGET="/$PATH_TO_NEO4J_OUTPUT"
     ;;
 esac
 

@@ -30,7 +30,7 @@ services:
       # Allow LOAD CSV access from anywhere in the container filesystem
       NEO4J_server_directories_import: /
 
-      NEO4J_OUTPUT_PATH: ${NEO4J_OUTPUT_PATH}
+      PATH_TO_NEO4j_OUTPUT: ${NEO4J_OUTPUT_PATH}
       EXTENSION_SCRIPT: /setup-path.sh
     volumes:
       - neo4j_data:/data
