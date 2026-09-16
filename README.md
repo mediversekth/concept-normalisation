@@ -84,17 +84,43 @@ python scripts\prepare_snomed.py
 This is a one-off step per SNOMED release — the parquet/embedding files it
 produces are reused by every pipeline run after that.
 
+### Environment configuration
+
+Copy the provided .env-tmpl file to .env:
+
+```bash
+cp .env-tmpl .env
+```
+
+On Windows PowerShell:
+
+```bash
+Copy-Item .env-tmpl .env
+```
+
+Then update the values in .env:
+
+```bash
+HF_TOKEN=<your-huggingface-token>
+CONCEPT_NORM_NEO4J_PASSWORD="<your-neo4j-password>"
+PATH_TO_NEO4J_OUTPUT=<absolute-path-to-neo4j-output-folder>
+```
+
+HF_TOKEN is optional.
+
+`PATH_TO_NEO4J_OUTPUT` must be the absolute path to the data/neo4j-output folder. The Docker setup uses this path automatically, so it only needs to be configured here.
+
+***NOTE:** Remember to create the `neo4j-output` folder at said location as well, if you haven't already!*
+
 ### Start Neo4J and ElasticSearch
 
 Before following steps, we need to start Neo4J and ElasticSearch engine. There is already a configured docker compose file which can be started by running:
-
-**NOTE:** Adjust the path under Neo4J volumes to match the location of your `neo4j-output` folder. This is an absolute path and it has to be the same both inside and outside the container. Note that some versions of docker compose struggle with colons, so if you are on a system that uses colons in the disk name or similar, you may need to remove that part.
 
 ```bash
 docker compose up -d
 ```
 
-The docker compose file is configured for persistent storage, so doing `docker compose down` will not remove data that has been loaded into neo4j or elasticsearch. One can simply rerun `docker compose up -d` if you want to run the Neo4J and ElasticSearch instances with all the data still there.
+The Docker Compose setup uses `PATH_TO_NEO4J_OUTPUT` from `.env` to mount the Neo4j loader output directory. The docker compose file is also configured for persistent storage, so doing `docker compose down` will not remove data that has been loaded into neo4j or elasticsearch. One can simply rerun `docker compose up -d` if you want to run the Neo4J and ElasticSearch instances with all the data still there.
 
 ### Load data into ElasticSearch
 
@@ -109,13 +135,23 @@ The SNOMED loader for Neo4J exists [here](https://github.com/IHTSDO/snomed-datab
 This step requires you to go to the location where you cloned the repository then into the `NEO4J` folder. Subsequently, run the following command with the placeholders replaced with actual values:
 
 ```bash
-python snomed_g_graphdb_build_tools.py db_build --action create --rf2 <rf2-release-directory> --release_type full --neopw <password> --output_dir <output-directory-path>
+python snomed_g_graphdb_build_tools.py db_build \
+  --action create \
+  --rf2 <rf2-release-directory> \
+  --release_type full \
+  --neopw <neo4j-password> \
+  --output_dir <absolute-path-to-neo4j-output>
 ```
 
 The following is an example command, how it should look. _IMPORTANT:_ The `neo4j-output` folder path must match that described in the docker compose file.
 
 ```bash
-python snomed_g_graphdb_build_tools.py db_build --action create --rf2 C:\repos\concept-normalisation\data\SnomedCT_InternationalRF2_PRODUCTION_20250901T120000Z\Full\ --release_type full --neopw conceptnorm --output_dir C:\repos\concept-normalisation\data\neo4j-output\
+python snomed_g_graphdb_build_tools.py db_build \
+  --action create \
+  --rf2 C:\repos\concept-normalisation\data\SnomedCT_InternationalRF2_PRODUCTION_20250901T120000Z\Full\ \
+  --release_type full \
+  --neopw conceptnorm \
+  --output_dir C:\repos\concept-normalisation\data\neo4j-output\
 ```
 
 ### Prepare the loaded Neo4j graph for GraphRAG retrieval
