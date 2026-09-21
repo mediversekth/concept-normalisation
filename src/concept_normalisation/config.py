@@ -117,7 +117,7 @@ OLLAMA_MODEL_NAME = "llama3.1"
 
 # Neo4j GraphRAG enrichment
 GRAPHRAG_EMBEDDING_MODEL_NAME = BIOLORD_MODEL_NAME
-GRAPHRAG_LLM_MODEL_NAME = OLLAMA_MODEL_NAME
+GRAPHRAG_LLM_MODEL_NAME = "qwen3:4b-instruct"
 GRAPHRAG_FULLTEXT_INDEX_NAME = "snomed_concept_fulltext"
 GRAPHRAG_VECTOR_INDEX_NAME = "snomed_concept_embeddings"
 
@@ -138,7 +138,9 @@ GRAPHRAG_WRITE_BATCH_SIZE = 500
 # ============================================================
 
 DEFAULT_TOP_K = 5
-GRAPHRAG_DEFAULT_TOP_K = 10
+# Be carefule with top_k (especially above 5), as too much context is retrieved from graphrag
+# causing the LLM to struggle to produce the correct output.
+GRAPHRAG_DEFAULT_TOP_K = 5
 
 # ============================================================
 # Text preprocessing defaults (syntactic matching)

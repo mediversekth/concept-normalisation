@@ -297,10 +297,10 @@ def build_search_text(
     embedding_parts: list[str] = []
 
     if fsn:
-        embedding_parts.append(f"FSN: {fsn}")
+        embedding_parts.append(f"{fsn}")
 
     if synonyms:
-        embedding_parts.append(f"Synonyms: {'; '.join(synonyms)}")
+        embedding_parts.append(f" - {'; '.join(synonyms)}")
 
     definitions = [
         cleaned
@@ -309,13 +309,13 @@ def build_search_text(
     ]
 
     if definitions:
-        embedding_parts.append(f"Definition: {' '.join(definitions)}")
+        embedding_parts.append(f" - {' '.join(definitions)}")
 
     if not embedding_parts and search_terms:
         readable_terms = search_terms.replace(" | ", "; ")
-        embedding_parts.append(f"Terms: {readable_terms}")
+        embedding_parts.append(f" - {readable_terms}")
 
-    embedding_text = "\n".join(embedding_parts)
+    embedding_text = "".join(embedding_parts)
     return search_terms, embedding_text
 
 

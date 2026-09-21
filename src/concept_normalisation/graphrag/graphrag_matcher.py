@@ -34,8 +34,12 @@ class GraphRAGMatcher:
         self.llm = OllamaLLM(
             model_name=llm_model,
             model_params={
-                "temperature": 0.0,
-            },
+                "options": {
+                    "temperature": 0.0,
+                    "num_ctx": 16000,
+                },
+                "format": "json",
+            }
         )
 
         self.retriever = HybridCypherRetriever(
@@ -56,6 +60,10 @@ class GraphRAGMatcher:
     def _retrieval_query(self) -> str:
         return """
 OPTIONAL MATCH (node)-[:ISA]->(parent:ObjectConcept)
+OPTIONAL MATCH (parent)-[:ISA]->(grandparent:ObjectConcept)
+
+OPTIONAL MATCH (child:ObjectConcept)-[:ISA]->(node)
+OPTIONAL MATCH (grandchild:ObjectConcept)-[:ISA]->(child)
 
 OPTIONAL MATCH (node)-[:HAS_ROLE_GROUP]->(rg:RoleGroup)
 
@@ -73,6 +81,11 @@ RETURN
     score,
 
     collect(DISTINCT parent.FSN) AS parents,
+    collect(DISTINCT grandparent.FSN) AS grandparents,
+
+    collect(DISTINCT child.FSN) AS children,
+    collect(DISTINCT grandchild.FSN) as grandchildren,
+
     collect(DISTINCT site.FSN) AS finding_sites,
     collect(DISTINCT morph.FSN) AS morphologies,
     collect(DISTINCT agent.FSN) AS causative_agents,
@@ -84,45 +97,40 @@ RETURN
     def _prompt_template(self):
         return RagTemplate(
             template="""
-You are performing SNOMED CT concept normalisation.
+You are reranking SNOMED CT concepts for concept normalisation.
 
 Diagnosis string:
 {query_text}
 
-Candidate SNOMED concepts retrieved from the terminology:
+Retrieved candidates:
 {context}
 
-Select the candidate that most closely represents the diagnosis string.
+Each top-level <Record ...> is one candidate.
 
-Use:
-- the candidate name
-- synonyms / definition
-- the SNOMED hierarchy
-- retrieval relevance
+Concepts inside parents, grandparents, children, grandchildren,
+finding_sites, morphologies, causative_agents, due_to,
+clinical_course, and interprets are context only and are NOT candidates.
 
-Do not invent a SNOMED concept that is not present in the candidates.
+Rank every top-level candidate from most likely to least likely to
+represent the diagnosis string.
 
-Return the candidates ranked from most likely to least likely.
+Rules:
+- Return every top-level candidate exactly once.
+- Do not add or remove candidates.
+- Do not return contextual concepts unless they also appear as a top-level candidate.
+- Do not simply preserve the retrieval order.
+- Base the ranking on the candidate description, hierarchy, relationships, and diagnosis string.
+- Do not assume clinical information that is not present in the diagnosis string.
 
-Use:
-- the candidate name
-- synonyms / definition
-- the SNOMED hierarchy
-- retrieval relevance
-
-Do not invent a SNOMED concept that is not present in the candidates.
-
-Return ONLY valid JSON.
-
-The response must have exactly this structure:
+Return ONLY valid JSON with exactly this structure:
 
 {{
     "results": [
         {{
-            "sctid": "SNOMED concept ID",
-            "fsn": "Fully specified name",
-            "reason": "Brief explanation",
-            "score": score,
+            "sctid": "exact SCTID",
+            "fsn": "exact FSN",
+            "reason": "brief explanation of the ranking",
+            "score": "original score of the retrieved concept"
         }}
     ]
 }}
@@ -130,10 +138,8 @@ The response must have exactly this structure:
 Do not include markdown.
 Do not include ```json.
 Do not include any text before or after the JSON object.
-
-{examples}
-""",
-            expected_inputs=["context", "query_text", "examples"],
+    """,
+            expected_inputs=["context", "query_text"],
         )
 
     def clean_query(self, text: str) -> str:
@@ -146,17 +152,6 @@ Do not include any text before or after the JSON object.
 
 
     def search(self, diagnosis: str, top_k: int = 3):
-        """
-        Search for SNOMED CT concepts that match the given diagnosis string.
-        
-        Parse the LLM output as JSON and return the results along with the retrieval context.
-
-        Returns:
-        {
-            "answer": List[Dict[str, Any]],  # Parsed JSON from the LLM, key-value pairs are "sctid", "fsn", and "reason".
-            "context": Any,                  # Retrieval context from the retriever
-        }
-        """
         result = self.rag.search(
             query_text=diagnosis,
             retriever_config={
@@ -166,16 +161,53 @@ Do not include any text before or after the JSON object.
         )
 
         try:
+            # Parse LLM output to json, parse score as double.
+            # Check that LLM outputs same amount of concepts as candidates provided by retriever.
             answer = json.loads(result.answer)
-        except json.JSONDecodeError:
+            matches = answer.get("results", [])
+
+            retrieved_count = len(result.retriever_result.items)
+            returned_count = len(matches)
+
+            if returned_count != retrieved_count:
+                raise ValueError(
+                    f"LLM returned {returned_count} candidates, "
+                    f"but retriever returned {retrieved_count}"
+                )
+
+            for match in matches:
+                if "score" in match and match["score"] is not None:
+                    match["score"] = float(match["score"])
+
+        except json.JSONDecodeError as exc:
+            # Something went wrong when parsing LLM output as JSON
+            print(
+                f"WARNING: GraphRAG was unable to parse returned JSON "
+                f"for query {diagnosis!r}"
+            )
+            print(result.answer)
+
             answer = {
-                "error": "LLM returned invalid JSON",
+                "error": exc.msg,
                 "raw_answer": result.answer,
             }
+            matches = []
+
+        except ValueError as exc:
+            print(
+                f"WARNING: GraphRAG returned invalid results "
+                f"for query {diagnosis!r}: {exc}"
+            )
+
+            answer = {
+                "error": str(exc),
+                "raw_answer": result.answer,
+            }
+            matches = []
 
         return {
             "answer": answer,
-            "matches": answer.get("results", []),
+            "matches": matches,
             "context": result.retriever_result,
         }
 

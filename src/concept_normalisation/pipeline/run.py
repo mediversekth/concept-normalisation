@@ -99,6 +99,7 @@ class ExperimentConfig:
     # Enrichment script (see scripts and README) must have been run to enrich the SNOMED concepts.
     run_graphrag_algorithm: bool = True
     graphrag_top_k: int = config.GRAPHRAG_DEFAULT_TOP_K
+    fresh_graphrag: bool = False
     
     run_evaluation: bool = True
     run_final_consensus: bool = True
@@ -470,6 +471,10 @@ def _stage_graphrag_matching(cfg: ExperimentConfig, data: pd.DataFrame) -> pd.Da
 
     if not cfg.run_graphrag_algorithm:
         return data
+
+    # If you specifically want to do a fresh_start of graphrag
+    if cfg.fresh_graphrag and "algorithm_graphrag_matches" in data.columns:
+            data.drop("algorithm_graphrag_matches", axis=1, inplace=True)
 
     # Finished only if column exists AND every row has a result
     complete = (
