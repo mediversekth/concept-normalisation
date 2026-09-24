@@ -36,7 +36,8 @@ class GraphRAGMatcher:
             model_params={
                 "options": {
                     "temperature": 0.0,
-                    "num_ctx": 16000,
+                    "num_ctx": config.GRAPHRAG_DEFAULT_CONTEXT_SIZE,
+                    "seed": config.GRAPHRAG_DEFAULT_SEED,
                 },
                 "format": "json",
             }
@@ -63,7 +64,6 @@ OPTIONAL MATCH (node)-[:ISA]->(parent:ObjectConcept)
 OPTIONAL MATCH (parent)-[:ISA]->(grandparent:ObjectConcept)
 
 OPTIONAL MATCH (child:ObjectConcept)-[:ISA]->(node)
-OPTIONAL MATCH (grandchild:ObjectConcept)-[:ISA]->(child)
 
 OPTIONAL MATCH (node)-[:HAS_ROLE_GROUP]->(rg:RoleGroup)
 
@@ -84,7 +84,6 @@ RETURN
     collect(DISTINCT grandparent.FSN) AS grandparents,
 
     collect(DISTINCT child.FSN) AS children,
-    collect(DISTINCT grandchild.FSN) as grandchildren,
 
     collect(DISTINCT site.FSN) AS finding_sites,
     collect(DISTINCT morph.FSN) AS morphologies,
