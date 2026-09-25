@@ -99,6 +99,7 @@ class ExperimentConfig:
     # Enrichment script (see scripts and README) must have been run to enrich the SNOMED concepts.
     run_graphrag_algorithm: bool = True
     graphrag_top_k: int = config.GRAPHRAG_DEFAULT_TOP_K
+    graphrag_min_score: float = config.GRAPHRAG_DEFAULT_MIN_SCORE
     fresh_graphrag: bool = False
     
     run_evaluation: bool = True
@@ -497,6 +498,7 @@ def _stage_graphrag_matching(cfg: ExperimentConfig, data: pd.DataFrame) -> pd.Da
     matcher = GraphRAGMatcher(
         embedding_model=cfg.graphrag_embedding_model,
         llm_model=cfg.graphrag_model,
+        table_name=cfg.table_name
     )
         
     data = run_graphrag(
@@ -505,6 +507,7 @@ def _stage_graphrag_matching(cfg: ExperimentConfig, data: pd.DataFrame) -> pd.Da
         text_column=cfg.query_column,
         output_column="algorithm_graphrag_matches",
         top_k=cfg.graphrag_top_k,
+        min_score=cfg.graphrag_min_score,
         checkpoint_path=cfg.checkpoint_path,
     )
 

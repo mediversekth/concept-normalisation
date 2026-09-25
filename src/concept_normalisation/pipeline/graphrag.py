@@ -7,6 +7,7 @@ def run_graphrag(
     text_column: str = "diagnosis_text",
     output_column: str = "algorithm_graphrag_matches",
     top_k: int = 10,
+    min_score: float = 0.94,
     checkpoint_path: Path | None = None,
     checkpoint_every: int = 5,
 ):
@@ -45,10 +46,10 @@ def run_graphrag(
     for count, query in enumerate(unique_queries, start=1):
 
         try:
-            cleaned_query = matcher.clean_query(query)
             response = matcher.search(
-                diagnosis=cleaned_query,
+                diagnosis=query,
                 top_k=top_k,
+                min_score=min_score,
             )
 
             value = response["matches"]
