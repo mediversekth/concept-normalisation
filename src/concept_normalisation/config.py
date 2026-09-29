@@ -147,7 +147,7 @@ GRAPHRAG_WRITE_BATCH_SIZE = 500
 DEFAULT_TOP_K = 5
 # Be carefule with top_k (especially above 5), as too much context is retrieved from graphrag
 # causing the LLM to struggle to produce the correct output.
-GRAPHRAG_DEFAULT_TOP_K = 10
+GRAPHRAG_DEFAULT_TOP_K = 8
 
 
 # ============================================================

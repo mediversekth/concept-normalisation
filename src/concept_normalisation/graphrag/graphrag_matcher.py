@@ -1,13 +1,13 @@
 
 from pathlib import Path
 from datetime import datetime
+from typing import Literal
 
 from concept_normalisation import config
 from neo4j import GraphDatabase
 from neo4j_graphrag.embeddings import SentenceTransformerEmbeddings
 from neo4j_graphrag.llm import OllamaLLM
 from neo4j_graphrag.retrievers import HybridCypherRetriever
-from neo4j_graphrag.generation import RagTemplate
 from neo4j_graphrag.types import RetrieverResultItem
 import json
 import re
@@ -59,9 +59,19 @@ class GraphRAGMatcher:
             timeout=600
         )
 
-        self.retriever = HybridCypherRetriever(
+        self.base_retriever = HybridCypherRetriever(
             driver=self.driver,
             vector_index_name=vector_index_name,
+            fulltext_index_name=fulltext_index_name,
+            retrieval_query=RETRIEVAL_QUERY,
+            embedder=self.embedder,
+            result_formatter=self._result_formatter,
+            neo4j_database=neo4j_database,
+        )
+
+        self.enriched_retriever = HybridCypherRetriever(
+            driver=self.driver,
+            vector_index_name=f"{vector_index_name}_enriched",
             fulltext_index_name=fulltext_index_name,
             retrieval_query=RETRIEVAL_QUERY,
             embedder=self.embedder,
@@ -128,14 +138,18 @@ class GraphRAGMatcher:
         cleaned_diagnosis = self._clean_query(diagnosis)
 
         # Step 1: Retrieve candidates, will also retrieve context
-        retriever_results = self.retriever.search(
-            query_text=cleaned_diagnosis,
-            top_k=top_k
+        base_candidates, _ = self._retrieve_candidates(
+            retriever=self.base_retriever, diagnosis=cleaned_diagnosis, top_k=top_k
         )
-        candidates = [
-            self._candidate_from_item(item)
-            for item in retriever_results.items
-        ]
+        enriched_candidates, _ = self._retrieve_candidates(
+            retriever=self.enriched_retriever, diagnosis=cleaned_diagnosis, top_k=top_k
+        )
+
+        # Fuse candidates by SCTID
+        fused_candidates: dict[str, dict] = {}
+        fused_candidates = self._fuse_candidates(fused_candidates, base_candidates, "base")
+        fused_candidates = self._fuse_candidates(fused_candidates, enriched_candidates, "enriched")
+        candidates = list(fused_candidates.values())
 
         # Step 2: If a min_score is given, filter out results below min_score
         if min_score is None:
@@ -155,7 +169,6 @@ class GraphRAGMatcher:
                 "matches": [],
                 "retrieved_candidates": candidates,
                 "llm_candidates": [],
-                "context": retriever_results,
                 "top_k": top_k,
                 "min_score": min_score,
             }
@@ -187,39 +200,100 @@ class GraphRAGMatcher:
             self._log_candidates(cleaned_diagnosis, candidates=candidates, llm_candidates=llm_candidates, matches=matches)
 
         except json.JSONDecodeError as exc:
-            print(f"ERROR [GRAPHRAG]: Unable to parse json for query '{cleaned_diagnosis}'")
-
-            answer = {
-                "error": exc.msg,
-                "raw_answer": response.content
-            }
             matches = []
-            self._log_error(diagnosis=cleaned_diagnosis, answer=answer)
+            self._log_error(
+                msg=f"Unable to parse json for query '{cleaned_diagnosis}'", 
+                diagnosis=cleaned_diagnosis, error=str(exc), answer=response.content
+            )
 
         except (TypeError, ValueError) as exc:
-            print(f"ERROR [GRAPHRAG]: Returned invalid results for query '{cleaned_diagnosis}'")
-
-            answer = {
-                "error": str(exc),
-                "raw_answer": response.content,
-            }
             matches = []
-            self._log_error(diagnosis=cleaned_diagnosis, answer=answer)
+            self._log_error(
+                msg=f"Returned invalid results for query '{cleaned_diagnosis}'", 
+                diagnosis=cleaned_diagnosis, error=str(exc), answer=response.content
+            )
 
         return {
             "answer": answer,
             "matches": matches,
             "retrieved_candidates": candidates,
             "llm_candidates": llm_candidates,
-            "context": retriever_results,
             "top_k": top_k,
             "min_score": min_score,
         }
 
+    def _fuse_candidates(
+        self,
+        fused: dict[str, dict],
+        candidates: list[dict],
+        method: Literal["base", "enriched"],
+    ) -> dict[str, dict]:
+        """Fuse one list of candidates into fused results by SCTID."""
+
+        if method not in ("base", "enriched"):
+            raise ValueError(f"Invalid method: {method}")
+
+        score_key = f"{method}_score"
+
+        for candidate in candidates:
+            sctid = candidate.get("sctid")
+            if sctid is None:
+                continue
+
+            sctid = str(sctid)
+            if sctid in fused:
+                fused[sctid][score_key] = candidate.get("score")
+
+                if method not in fused[sctid]["found_by"]:
+                    fused[sctid]["found_by"].append(method)
+            else:
+                fused[sctid] = {
+                    **candidate,
+                    "base_score": candidate.get("score") if method == "base" else None,
+                    "enriched_score": candidate.get("score") if method == "enriched" else None,
+                    "found_by": [method],
+                }
+
+            scores = [
+                fused[sctid].get("base_score"),
+                fused[sctid].get("enriched_score"),
+            ]
+
+            fused[sctid]["score"] = max(
+                score for score in scores if score is not None
+            )
+
+        return fused
+
+    def _retrieve_candidates(
+        self,
+        retriever: HybridCypherRetriever,
+        diagnosis: str,
+        top_k: int,
+    ) -> tuple[list[dict], object]:
+        """Retrieve candidates from one retriever and convert them to dictionaries."""
+        result = retriever.search(
+            query_text=diagnosis,
+            top_k=top_k,
+        )
+
+        candidates = [
+            self._candidate_from_item(item)
+            for item in result.items
+        ]
+
+        return candidates, result
+
     def close(self):
         self.driver.close()
 
-    def _log_error(self, diagnosis, answer):
+    # ===================================================================
+    # LOG HELPERS
+    # ===================================================================
+
+    def _log_error(self, msg, diagnosis, error, answer):
+        print(f"ERROR [GRAPHRAG]: {msg}")
+
         logs_dir = Path(self.log_dir) / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -228,8 +302,8 @@ class GraphRAGMatcher:
                 {
                     "timestamp": datetime.now().isoformat(),
                     "diagnosis": diagnosis,
-                    "error": answer.get("error"),
-                    "raw_answer": answer.get("raw_answer"),
+                    "error": error,
+                    "raw_answer": answer,
                 },
                 f,
                 ensure_ascii=False,
@@ -244,6 +318,7 @@ class GraphRAGMatcher:
             json.dump(
                 {
                     "timestamp": datetime.now().isoformat(),
+                    "nr_of_candidates": len(candidates),
                     "diagnosis": diagnosis,
                     "candidates": candidates,
                     "llm_candidates": llm_candidates,

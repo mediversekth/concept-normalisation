@@ -15,6 +15,11 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 from concept_normalisation import config
 from concept_normalisation import utils
 
+import re
+
+def strip_semantic_tag(term: str) -> str:
+    return re.sub(r"\s+\([^()]+\)$", "", term).strip()
+
 
 # -----------------------------------------------------------------------------
 # Constants
@@ -23,6 +28,13 @@ from concept_normalisation import utils
 LOG = logging.getLogger("prepare_snomed_graphrag")
 
 SEARCHABLE_DESCRIPTION_TYPE_IDS = [config.FSN_TYPE_ID, config.SYNONYM_TYPE_ID]
+EMBEDDING_RELATIONSHIP_TYPES = [
+    "FINDING_SITE",
+    "ASSOCIATED_MORPHOLOGY",
+    "CLINICAL_COURSE",
+    "CAUSATIVE_AGENT",
+    "DUE_TO",
+]
 
 
 # -----------------------------------------------------------------------------
@@ -241,12 +253,25 @@ def fetch_concept_batch(
     WHERE (d.active = true OR toString(d.active) = '1')
       AND toLower(coalesce(d.languageCode, '')) = 'en'
       AND toString(d.typeId) IN $description_type_ids
+    WITH c,
+         [term IN collect(DISTINCT d.term) WHERE term IS NOT NULL] AS descriptions
+
+    OPTIONAL MATCH (c)-[:HAS_ROLE_GROUP]->(rg:RoleGroup)-[r]->(target:ObjectConcept)
+    WHERE type(r) IN $relationship_types
+    AND (target.active = true OR toString(target.active) = '1')
 
     RETURN
         toString(c.sctid) AS sctid,
         elementId(c) AS node_id,
         coalesce(c.FSN, '') AS fsn,
-        [term IN collect(DISTINCT d.term) WHERE term IS NOT NULL] AS descriptions
+        descriptions,
+        collect(DISTINCT CASE
+            WHEN target IS NOT NULL 
+            THEN {{
+                type: type(r),
+                fsn: target.FSN
+            }}
+        END) AS relationships
     ORDER BY sctid
     """
 
@@ -255,6 +280,7 @@ def fetch_concept_batch(
         after_sctid=after_sctid,
         batch_size=batch_size,
         description_type_ids=SEARCHABLE_DESCRIPTION_TYPE_IDS,
+        relationship_types=EMBEDDING_RELATIONSHIP_TYPES,
     )
 
     return [record.data() for record in result]
@@ -264,17 +290,26 @@ def build_search_text(
     fsn: str,
     descriptions: Iterable[str],
     textdefinitions: Iterable[str] | None,
-) -> tuple[str, str]:
+    relationships: Iterable[str] | None,
+) -> tuple[str, str, str, bool]:
     """
-    Build the two text representations stored on ObjectConcept.
+    Build the three text representations stored on ObjectConcept.
 
     search_terms:
         FSN + synonyms/descriptions, used for full-text retrieval.
 
     embedding_text:
-        FSN + synonyms/descriptions + optional TextDefinition, used to produce
-        the semantic embedding.
+        FSN + synonyms/descriptions + optional TextDefinition, used for the
+        base semantic embedding.
+
+    enriched_embedding_text:
+        Base embedding text + selected SNOMED relationship context, used for
+        the enriched semantic embedding.
     """
+    # -------------------------------------------------------------------------
+    # FSN and synonyms
+    # -------------------------------------------------------------------------
+
     fsn = clean_text(fsn)
     fsn_key = fsn.casefold()
 
@@ -294,13 +329,17 @@ def build_search_text(
     searchable_terms = ([fsn] if fsn else []) + synonyms
     search_terms = " | ".join(searchable_terms)
 
-    embedding_parts: list[str] = []
+    # -------------------------------------------------------------------------
+    # Base embedding text: FSN + synonyms + TextDefinitions
+    # -------------------------------------------------------------------------
+
+    base_embedding_parts: list[str] = []
 
     if fsn:
-        embedding_parts.append(f"{fsn}")
+        base_embedding_parts.append(fsn)
 
     if synonyms:
-        embedding_parts.append(f" - {'; '.join(synonyms)}")
+        base_embedding_parts.append(f" - {'; '.join(synonyms)}")
 
     definitions = [
         cleaned
@@ -309,14 +348,51 @@ def build_search_text(
     ]
 
     if definitions:
-        embedding_parts.append(f" - {' '.join(definitions)}")
+        base_embedding_parts.append(f" - {' '.join(definitions)}")
 
-    if not embedding_parts and search_terms:
+    if not base_embedding_parts and search_terms:
         readable_terms = search_terms.replace(" | ", "; ")
-        embedding_parts.append(f" - {readable_terms}")
+        base_embedding_parts.append(f" - {readable_terms}")
 
-    embedding_text = "".join(embedding_parts)
-    return search_terms, embedding_text
+    embedding_text = "".join(base_embedding_parts)
+
+    # -------------------------------------------------------------------------
+    # Enriched embedding text: base text + SNOMED relationships
+    # -------------------------------------------------------------------------
+
+    relationship_labels = {
+        "FINDING_SITE": "Finding site",
+        "ASSOCIATED_MORPHOLOGY": "Associated morphology",
+        "CLINICAL_COURSE": "Clinical course",
+        "CAUSATIVE_AGENT": "Causative agent",
+        "DUE_TO": "Due to",
+    }
+
+    relationship_terms: list[str] = []
+
+    for relationship in relationships or []:
+        relationship_type = relationship.get("type")
+        label = relationship_labels.get(relationship_type)
+        target_fsn = clean_text(relationship.get("fsn"))
+
+        if not label or not target_fsn:
+            continue
+
+        # Keep relationship labels, but remove semantic tags from target FSNs.
+        target_fsn = strip_semantic_tag(target_fsn)
+
+        if target_fsn:
+            relationship_terms.append(f"{label}: {target_fsn}")
+
+    has_relationships = bool(relationship_terms)
+
+    enriched_embedding_text = embedding_text
+    if relationship_terms:
+        enriched_embedding_text += f" - {'; '.join(relationship_terms)}"
+
+    # -------------------------------------------------------------------------     
+
+    return search_terms, embedding_text, enriched_embedding_text, has_relationships
 
 
 def chunked(items: list, chunk_size: int):
@@ -341,8 +417,11 @@ def write_concept_rows(
         c.search_terms = row.search_terms,
         c.embedding_text = row.embedding_text,
         c.embedding = row.embedding,
+        c.enriched_embedding_text = row.enriched_embedding_text,
+        c.enriched_embedding = row.enriched_embedding,
         c.embedding_model = row.embedding_model,
-        c.has_text_definition = row.has_text_definition
+        c.has_text_definition = row.has_text_definition,
+        c.has_relationships = row.has_relationships
 
     RETURN count(c) AS updated
     """
@@ -389,38 +468,45 @@ def enrich_concepts(
                     break
 
                 prepared_rows: list[dict] = []
-                texts_to_embed: list[str] = []
+                base_texts_to_embed: list[str] = []
+                enriched_texts_to_embed: list[str] = []
 
                 for record in records:
                     sctid = record["sctid"]
                     definitions = textdefinitions.get(sctid, [])
 
-                    search_terms, embedding_text = build_search_text(
+                    search_terms, embedding_text, enriched_embedding_text, has_relationships = build_search_text(
                         fsn=record["fsn"],
                         descriptions=record["descriptions"],
                         textdefinitions=definitions,
+                        relationships=record["relationships"],
                     )
 
                     if not embedding_text:
                         LOG.warning("Skipping %s: no searchable text found.", sctid)
                         continue
 
-                    texts_to_embed.append(embedding_text)
+                    base_texts_to_embed.append(embedding_text)
+                    enriched_texts_to_embed.append(enriched_embedding_text)
                     prepared_rows.append(
                         {
                             "node_id": record["node_id"],
                             "search_terms": search_terms,
                             "embedding_text": embedding_text,
+                            "enriched_embedding_text": enriched_embedding_text,
                             "embedding_model": model_name,
                             "has_text_definition": bool(definitions),
+                            "has_relationships": has_relationships
                         }
                     )
 
                 if prepared_rows:
-                    embeddings = create_embeddings(model, texts_to_embed)
+                    embeddings = create_embeddings(model, base_texts_to_embed)
+                    enriched_embeddings = create_embeddings(model, enriched_texts_to_embed)
 
-                    for row, embedding in zip(prepared_rows, embeddings):
+                    for row, embedding, enriched_embedding in zip(prepared_rows, embeddings, enriched_embeddings):
                         row["embedding"] = embedding
+                        row["enriched_embedding"] = enriched_embedding
 
                     total_updated += write_concept_rows(
                         session=session,
@@ -441,23 +527,44 @@ def enrich_concepts(
 
 def create_indexes(session, dimensions: int) -> None:
     """Create the full-text and vector indexes required for hybrid retrieval."""
-    LOG.info("Creating full-text index: %s", config.GRAPHRAG_FULLTEXT_INDEX_NAME)
+    fulltext_index_name = config.GRAPHRAG_FULLTEXT_INDEX_NAME
+    vector_index_name = config.GRAPHRAG_VECTOR_INDEX_NAME
+    enriched_vector_index_name = f"{config.GRAPHRAG_VECTOR_INDEX_NAME}_enriched"
+
+    LOG.info("Creating full-text index: %s", fulltext_index_name)
 
     session.run(
         f"""
-        CREATE FULLTEXT INDEX {config.GRAPHRAG_FULLTEXT_INDEX_NAME} IF NOT EXISTS
+        CREATE FULLTEXT INDEX {fulltext_index_name} IF NOT EXISTS
         FOR (c:ObjectConcept)
         ON EACH [c.search_terms]
         """
     ).consume()
 
-    LOG.info("Creating vector index: %s", config.GRAPHRAG_VECTOR_INDEX_NAME)
+    LOG.info("Creating base vector index: %s", vector_index_name)
 
     session.run(
         f"""
-        CREATE VECTOR INDEX {config.GRAPHRAG_VECTOR_INDEX_NAME} IF NOT EXISTS
+        CREATE VECTOR INDEX {vector_index_name} IF NOT EXISTS
         FOR (c:ObjectConcept)
         ON (c.embedding)
+        OPTIONS {{
+            indexConfig: {{
+                `vector.dimensions`: $dimensions,
+                `vector.similarity_function`: 'cosine'
+            }}
+        }}
+        """,
+        dimensions=dimensions,
+    ).consume()
+
+    LOG.info("Creating enriched vector index: %s", enriched_vector_index_name)
+    
+    session.run(
+        f"""
+        CREATE VECTOR INDEX {enriched_vector_index_name} IF NOT EXISTS
+        FOR (c:ObjectConcept)
+        ON (c.enriched_embedding)
         OPTIONS {{
             indexConfig: {{
                 `vector.dimensions`: $dimensions,
