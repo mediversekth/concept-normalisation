@@ -256,6 +256,29 @@ to force a full rerun.
 
 ## Outputs
 
+### GraphRAG evaluation notebook
+
+Open `graphrag_baseline_evaluation.ipynb` and run all cells after producing the
+dataset-specific ICD9 and ICD10 pipeline checkpoints. Install notebook plotting
+and execution dependencies with `pip install -e ".[evaluation]"` if needed.
+The notebook compares GraphRAG with all six baselines using exact Recall@K,
+Top-1 Accuracy, and MRR@5 (the shared saved prediction depth), separately for
+each dataset. It audits target-set sizes, missing labels, repeated queries, and
+legacy ICD9 identifier conversions, and shows row and unique-query averages.
+
+Existing GraphRAG JSONL logs supply candidate-by-candidate walkthroughs of
+retrieval, fusion, filtering, graph evidence, and final LLM selection. No models
+or services are called. Tables, PNG/SVG plots, and an input-hash manifest are
+saved under `data/output/graphrag_baseline_evaluation/`. The original poster
+notebook and pipeline artifacts are preserved.
+
+The notebook keeps settings, explanations, and short evaluation steps in its cells.
+Its reusable loading, scoring, plotting, and GraphRAG trace helpers live in
+[`src/concept_normalisation/notebook_evaluation.py`](src/concept_normalisation/notebook_evaluation.py).
+To change the analysis, edit the notebook settings; to change how a calculation or
+plot works, edit the corresponding helper. Run the helper tests with
+`python -m pytest tests/test_evaluation_notebook.py -q`.
+
 All written to `data/output/`:
 
 | File                                | Contents                                             |

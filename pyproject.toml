@@ -25,6 +25,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+evaluation = ["matplotlib", "nbformat", "nbclient"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
