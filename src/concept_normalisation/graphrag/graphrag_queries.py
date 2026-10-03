@@ -6,7 +6,8 @@ import json
 # NEO4J CYPHER FOR RETRIEVING CONTEXT
 # ==================================================================
 
-RETRIEVAL_QUERY = """
+def build_retrieval_query(use_score: bool = True) -> str:
+    return f"""
 OPTIONAL MATCH (node)-[:ISA]->(parent:ObjectConcept)
 OPTIONAL MATCH (parent)-[:ISA]->(grandparent:ObjectConcept)
 
@@ -25,7 +26,7 @@ RETURN
     node.sctid AS sctid,
     node.FSN AS fsn,
     node.embedding_text AS description,
-    score,
+    {"score," if use_score else ""}
 
     collect(DISTINCT parent.FSN) AS parents,
     collect(DISTINCT grandparent.FSN) AS grandparents,
@@ -45,11 +46,24 @@ RETURN
 # ==================================================================
 
 def build_prompt(
-        diagnosis: str, 
-        candidates: list[dict], 
-        max_llm_results: int = 5
-    ) -> str:
+    diagnosis: str,
+    candidates: list[dict],
+    max_llm_results: int = 5,
+    use_score: bool = True,
+) -> str:
     max_results = min(max_llm_results, len(candidates))
+
+    score_fields = (
+        """
+            "base_score": "original base retriever score or null",
+            "enriched_score": "original enriched retriever score or null",
+            "rrf_score": "reciprocal rank fusion score"
+        """
+        if use_score
+        else """
+            "rrf_score": "reciprocal rank fusion score"
+        """
+    )
 
     return f"""
 You are reranking SNOMED CT concepts for concept normalisation.
@@ -65,6 +79,15 @@ Concepts inside parents, grandparents, children, finding_sites,
 morphologies, causative_agents, due_to, clinical_course, and interprets
 are context only and are NOT candidates.
 
+The candidates have already been combined using Reciprocal Rank Fusion (RRF).
+The RRF score reflects how highly a candidate was ranked across the retrieval
+methods.
+
+The original base_score and enriched_score come from different retrieval
+methods and are not necessarily directly comparable. Treat them as supporting
+evidence only. A candidate with a lower raw retrieval score may still be the
+best match if its meaning and graph context better match the diagnosis.
+
 Select and rank the TOP {max_results} candidates from most likely to least
 likely to represent the diagnosis string.
 
@@ -72,10 +95,13 @@ Rules:
 - Return at most {max_results} candidates.
 - Only return candidates from the retrieved candidates list.
 - Do not return contextual concepts unless they also appear as a candidate.
-- Do not simply preserve the retrieval order.
-- Base the ranking on the candidate description, hierarchy, relationships, retrieval score, and diagnosis string.
+- Do not simply preserve the RRF ranking.
+- Consider the diagnosis string, candidate description, hierarchy,
+  relationships, retrieval ranks, RRF score, and original retrieval scores.
+- Prefer semantic and clinical correctness over retrieval score alone.
 - Do not assume clinical information that is not present in the diagnosis string.
-- Copy the exact sctid, fsn, and original retrieval score for every returned candidate.
+- Copy the exact sctid, fsn, and retrieval values from the candidate.
+- Do not modify or recalculate any retrieval scores.
 
 Return ONLY valid JSON with exactly this structure:
 
@@ -85,7 +111,7 @@ Return ONLY valid JSON with exactly this structure:
             "sctid": "exact SCTID",
             "fsn": "exact FSN",
             "reason": "brief explanation of the ranking",
-            "score": "original score of the retrieved concept"
+            {score_fields}
         }}
     ]
 }}

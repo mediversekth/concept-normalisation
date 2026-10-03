@@ -12,7 +12,7 @@ from neo4j_graphrag.types import RetrieverResultItem
 import json
 import re
 from concept_normalisation.graphrag.graphrag_queries import (
-    RETRIEVAL_QUERY,
+    build_retrieval_query,
     build_prompt
 )
 
@@ -30,10 +30,12 @@ class GraphRAGMatcher:
         embedding_model=config.GRAPHRAG_EMBEDDING_MODEL_NAME,
         llm_model=config.GRAPHRAG_LLM_MODEL_NAME,
         log_dir=config.DATA_DIR,
+        use_score: bool = True,
         table_name=""
     ):
         self.log_dir=log_dir
         self.table_name=table_name
+        self.use_score=use_score
 
         self.driver = GraphDatabase.driver(
             neo4j_uri, 
@@ -55,15 +57,16 @@ class GraphRAGMatcher:
                 },
                 "format": "json",
                 "keep_alive": "30m",
+                "think": False
             },
-            timeout=600
+            timeout=900
         )
 
         self.base_retriever = HybridCypherRetriever(
             driver=self.driver,
             vector_index_name=vector_index_name,
             fulltext_index_name=fulltext_index_name,
-            retrieval_query=RETRIEVAL_QUERY,
+            retrieval_query=build_retrieval_query(use_score=use_score),
             embedder=self.embedder,
             result_formatter=self._result_formatter,
             neo4j_database=neo4j_database,
@@ -73,7 +76,7 @@ class GraphRAGMatcher:
             driver=self.driver,
             vector_index_name=f"{vector_index_name}_enriched",
             fulltext_index_name=fulltext_index_name,
-            retrieval_query=RETRIEVAL_QUERY,
+            retrieval_query=build_retrieval_query(use_score=use_score),
             embedder=self.embedder,
             result_formatter=self._result_formatter,
             neo4j_database=neo4j_database,
@@ -126,7 +129,9 @@ class GraphRAGMatcher:
             self, 
             diagnosis: str, 
             top_k: int = 10,
-            min_score: float | None = None
+            min_score: float | None = None,
+            log_candidates: bool = True,
+            log_errors: bool = True
         ):
         """
         Retrieve candidates, optionally filter weak retrievals, then ask the LLM
@@ -136,20 +141,27 @@ class GraphRAGMatcher:
         """
 
         cleaned_diagnosis = self._clean_query(diagnosis)
+        fused_candidates: dict[str, dict] = {}
 
         # Step 1: Retrieve candidates, will also retrieve context
-        base_candidates, _ = self._retrieve_candidates(
-            retriever=self.base_retriever, diagnosis=cleaned_diagnosis, top_k=top_k
-        )
-        enriched_candidates, _ = self._retrieve_candidates(
-            retriever=self.enriched_retriever, diagnosis=cleaned_diagnosis, top_k=top_k
-        )
+        if config.GRAPHRAG_DEFAULT_RETRIEVEAL_METHOD == "BASE_EMBEDDING" or config.GRAPHRAG_DEFAULT_RETRIEVEAL_METHOD == "BOTH":
+            base_candidates, _ = self._retrieve_candidates(
+                retriever=self.base_retriever, diagnosis=cleaned_diagnosis, top_k=top_k
+            )
+            fused_candidates = self._fuse_candidates(fused_candidates, base_candidates, "base", use_score=self.use_score)
 
-        # Fuse candidates by SCTID
-        fused_candidates: dict[str, dict] = {}
-        fused_candidates = self._fuse_candidates(fused_candidates, base_candidates, "base")
-        fused_candidates = self._fuse_candidates(fused_candidates, enriched_candidates, "enriched")
-        candidates = list(fused_candidates.values())
+        if config.GRAPHRAG_DEFAULT_RETRIEVEAL_METHOD == "ENRICHED_EMBEDDING" or config.GRAPHRAG_DEFAULT_RETRIEVEAL_METHOD == "BOTH":
+            enriched_candidates, _ = self._retrieve_candidates(
+                retriever=self.enriched_retriever, diagnosis=cleaned_diagnosis, top_k=top_k
+            )
+            fused_candidates = self._fuse_candidates(fused_candidates, enriched_candidates, "enriched", use_score=self.use_score)
+
+        # Fuse candidates from used retrieval methods        
+        candidates = sorted(
+            fused_candidates.values(),
+            key=lambda candidate: candidate["rrf_score"],
+            reverse=True,
+        )
 
         # Step 2: If a min_score is given, filter out results below min_score
         if min_score is None:
@@ -175,7 +187,7 @@ class GraphRAGMatcher:
 
         # Step 3: LLM reranking. It sees all surviving candidates but should return
         # no more than configured maximum number of candidates.
-        prompt = build_prompt(cleaned_diagnosis, llm_candidates, config.GRAPHRAG_DEFAULT_MAX_LLM_RESULTS)
+        prompt = build_prompt(cleaned_diagnosis, llm_candidates, config.GRAPHRAG_DEFAULT_MAX_LLM_RESULTS, use_score=self.use_score)
         response = self.llm.invoke(prompt)
 
         try:
@@ -197,21 +209,24 @@ class GraphRAGMatcher:
                 if "score" in match and match["score"] is not None:
                     match["score"] = float(match["score"])
 
-            self._log_candidates(cleaned_diagnosis, candidates=candidates, llm_candidates=llm_candidates, matches=matches)
+            if log_candidates:
+                self._log_candidates(cleaned_diagnosis, candidates=candidates, llm_candidates=llm_candidates, matches=matches)
 
         except json.JSONDecodeError as exc:
             matches = []
-            self._log_error(
-                msg=f"Unable to parse json for query '{cleaned_diagnosis}'", 
-                diagnosis=cleaned_diagnosis, error=str(exc), answer=response.content
-            )
+            if log_errors:
+                self._log_error(
+                    msg=f"Unable to parse json for query '{cleaned_diagnosis}'", 
+                    diagnosis=cleaned_diagnosis, error=str(exc), answer=response.content
+                )
 
         except (TypeError, ValueError) as exc:
             matches = []
-            self._log_error(
-                msg=f"Returned invalid results for query '{cleaned_diagnosis}'", 
-                diagnosis=cleaned_diagnosis, error=str(exc), answer=response.content
-            )
+            if log_errors:
+                self._log_error(
+                    msg=f"Returned invalid results for query '{cleaned_diagnosis}'", 
+                    diagnosis=cleaned_diagnosis, error=str(exc), answer=response.content
+                )
 
         return {
             "answer": answer,
@@ -227,41 +242,48 @@ class GraphRAGMatcher:
         fused: dict[str, dict],
         candidates: list[dict],
         method: Literal["base", "enriched"],
+        use_score: bool = True,
+        rrf_k: int = 60,
     ) -> dict[str, dict]:
-        """Fuse one list of candidates into fused results by SCTID."""
+        """Fuse candidates using Reciprocal Rank Fusion."""
 
         if method not in ("base", "enriched"):
             raise ValueError(f"Invalid method: {method}")
 
         score_key = f"{method}_score"
+        rank_key = f"{method}_rank"
 
-        for candidate in candidates:
+        for rank, candidate in enumerate(candidates, start=1):
             sctid = candidate.get("sctid")
+
             if sctid is None:
                 continue
 
             sctid = str(sctid)
-            if sctid in fused:
-                fused[sctid][score_key] = candidate.get("score")
 
-                if method not in fused[sctid]["found_by"]:
-                    fused[sctid]["found_by"].append(method)
-            else:
+            if sctid not in fused:
                 fused[sctid] = {
                     **candidate,
-                    "base_score": candidate.get("score") if method == "base" else None,
-                    "enriched_score": candidate.get("score") if method == "enriched" else None,
-                    "found_by": [method],
+                    "base_score": None,
+                    "enriched_score": None,
+                    "base_rank": None,
+                    "enriched_rank": None,
+                    "rrf_score": 0.0,
+                    "found_by": [],
                 }
 
-            scores = [
-                fused[sctid].get("base_score"),
-                fused[sctid].get("enriched_score"),
-            ]
+            # Keep the original retriever information
+            fused[sctid][rank_key] = rank
+            fused[sctid]["score"] = max(candidate.get("score"), fused[sctid].get("score", 0.0))
 
-            fused[sctid]["score"] = max(
-                score for score in scores if score is not None
-            )
+            if use_score:
+                fused[sctid][score_key] = candidate.get("score")
+
+            if method not in fused[sctid]["found_by"]:
+                fused[sctid]["found_by"].append(method)
+
+            # Reciprocal Rank Fusion contribution
+            fused[sctid]["rrf_score"] += 1 / (rrf_k + rank)
 
         return fused
 

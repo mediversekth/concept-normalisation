@@ -34,7 +34,10 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # The table currently being mapped to SNOMED CT. Change this one line to
 # point the whole pipeline at a different table -- nothing else needs
 # editing.
-ACTIVE_TABLE = DATA_DIR / "diagnosis_icd9_snomed.csv"
+ACTIVE_TABLE = DATA_DIR / os.environ.get(
+    "CONCEPT_NORM_ACTIVE_TABLE",
+    "diagnosis_icd10_snomed.csv",
+)
 
 MICRO_CSV_PATH = (
     DATA_DIR
@@ -120,13 +123,23 @@ GRAPHRAG_EMBEDDING_MODEL_NAME = BIOLORD_MODEL_NAME
 GRAPHRAG_FULLTEXT_INDEX_NAME = "snomed_concept_fulltext"
 GRAPHRAG_VECTOR_INDEX_NAME = "snomed_concept_embeddings"
 
+# ============================================================
 # GraphRAG Settings
-GRAPHRAG_LLM_MODEL_NAME = "frob/qwen3.5-instruct:27b"
+# ============================================================
+
+GRAPHRAG_LLM_MODEL_NAME = "qwen3.8:27b"
 GRAPHRAG_DEFAULT_HOST= "https://graphrag-llm.app.cloud.cbh.kth.se"
 GRAPHRAG_DEFAULT_SEED = 42
 GRAPHRAG_DEFAULT_CONTEXT_SIZE = 64000
 GRAPHRAG_DEFAULT_MAX_LLM_RESULTS = 5   # Maximum number of candidates returned by the LLM
-GRAPHRAG_DEFAULT_MIN_SCORE = 0.94
+GRAPHRAG_DEFAULT_MIN_SCORE = 0.90
+GRAPHRAG_USE_SCORE = True
+
+# Options: "BASE_EMBEDDING", "ENRICHED_EMBEDDING", "BOTH"
+GRAPHRAG_DEFAULT_RETRIEVEAL_METHOD = "BOTH"
+
+GRAPHRAG_LOG_CANDIDATES = True
+GRAPHRAG_LOG_ERRORS = True
 
 # ============================================================
 # Batch sizes
@@ -147,7 +160,7 @@ GRAPHRAG_WRITE_BATCH_SIZE = 500
 DEFAULT_TOP_K = 5
 # Be carefule with top_k (especially above 5), as too much context is retrieved from graphrag
 # causing the LLM to struggle to produce the correct output.
-GRAPHRAG_DEFAULT_TOP_K = 8
+GRAPHRAG_DEFAULT_TOP_K = 10
 
 
 # ============================================================

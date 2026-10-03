@@ -420,7 +420,13 @@ def load_traces(datasets: dict, specs: dict):
 
 
 def analyse_traces(trace_records: list[dict]):
-    """Return stage recall, query outcomes, and candidate-membership violations."""
+    """Return stage recall, query outcomes, and candidate-membership violations.
+
+    When retrieval scores are not used (use_score=False), score-based filtering is
+    bypassed and 100% of retrieved candidates pass into the LLM pool, so filtering
+    loss is 0. When Reciprocal Rank Fusion is active, candidates are sorted by RRF
+    score before filtering.
+    """
     stage_rows, outcome_rows, membership_rows = [], [], []
     for trace in trace_records:
         entry, gold = trace["entry"], trace["gold"]
@@ -491,15 +497,44 @@ def show_trace_diagnostics(
 
 
 def _candidate_rows(entry: dict, gold: frozenset, survivors: set, final_ranks: dict):
-    """Annotate retrieved candidates without changing their fused input order."""
+    """Annotate retrieved candidates without changing their fused input order.
+
+    Adapts to the pipeline configuration: includes score columns only when scores
+    are present, and includes RRF/rank columns when available.
+    """
+    has_scores = any(
+        c.get("score") is not None
+        or c.get("base_score") is not None
+        or c.get("enriched_score") is not None
+        for c in entry.get("candidates", [])
+    )
+    has_rrf = any(c.get("rrf_score") is not None for c in entry.get("candidates", []))
+    has_ranks = any(
+        c.get("base_rank") is not None or c.get("enriched_rank") is not None
+        for c in entry.get("candidates", [])
+    )
     candidates = []
-    for position, candidate in enumerate(entry["candidates"], 1):
-        concept = normalise_id(candidate["sctid"])
-        candidates.append({"input_position": position, "sctid": concept,
-            "fsn": candidate.get("fsn"), "found_by": candidate.get("found_by", "not logged"),
-            "base_score": candidate.get("base_score"), "enriched_score": candidate.get("enriched_score"),
-            "fused_score": candidate.get("score"), "sent_to_LLM": concept in survivors,
-            "final_rank": final_ranks.get(concept), "is_target": concept in gold})
+    for position, candidate in enumerate(entry.get("candidates", []), 1):
+        concept = normalise_id(candidate.get("sctid"))
+        row = {
+            "input_position": position,
+            "sctid": concept,
+            "fsn": candidate.get("fsn"),
+            "found_by": candidate.get("found_by", "not logged"),
+        }
+        if has_scores:
+            row["base_score"] = candidate.get("base_score")
+            row["enriched_score"] = candidate.get("enriched_score")
+            row["fused_score"] = candidate.get("score")
+        if has_rrf:
+            row["rrf_score"] = candidate.get("rrf_score")
+        if has_ranks:
+            row["base_rank"] = candidate.get("base_rank")
+            row["enriched_rank"] = candidate.get("enriched_rank")
+        row["sent_to_LLM"] = concept in survivors
+        row["final_rank"] = final_ranks.get(concept)
+        row["is_target"] = concept in gold
+        candidates.append(row)
     return candidates
 
 
@@ -542,33 +577,88 @@ def _plot_candidate_movement(
 
 
 def explain_trace(trace: dict, ks: list[int], mrr_depth: int, output_dir: Path):
-    """Display and export a query walkthrough using the saved candidate evidence."""
+    """Display and export a query walkthrough, adapting to the pipeline configuration.
+
+    Handles both scored and unscored configurations, and shows RRF score columns
+    when available.
+    """
     entry, gold = trace["entry"], trace["gold"]
     final_ids = candidate_ids(entry["matches"], "sctid")
     survivors = set(candidate_ids(entry["llm_candidates"], "sctid"))
     final_ranks = {concept: i for i, concept in enumerate(final_ids, 1)}
+
+    has_retrieval_scores = any(
+        c.get("score") is not None
+        or c.get("base_score") is not None
+        or c.get("enriched_score") is not None
+        for c in entry.get("candidates", [])
+    )
+    has_rrf = any(c.get("rrf_score") is not None for c in entry.get("candidates", []))
+    has_llm_scores = any(
+        m.get("score") is not None or m.get("rrf_score") is not None
+        for m in entry.get("matches", [])
+    )
+
     display(Markdown(f"### {trace['dataset']} — {trace['diagnosis_text']}"))
     print("1. Cleaned input:", clean_query(trace["diagnosis_text"]))
     print("Ground truth (evaluation only; not supplied as labels to GraphRAG):", ", ".join(sorted(gold)))
     print("Log timestamp:", entry.get("timestamp"), "| line:", entry["log_line"])
-    print("Historical threshold/top_k/model are not recorded in this log.")
+
+    config_notes = []
+    if has_rrf:
+        config_notes.append("Candidates fused with Reciprocal Rank Fusion (RRF).")
+    if has_retrieval_scores and has_llm_scores:
+        config_notes.append("Retrieval scores logged and copied by LLM.")
+    elif has_retrieval_scores:
+        config_notes.append("Retrieval scores logged; not returned by LLM.")
+    else:
+        config_notes.append("Retrieval scores not used.")
+    print(" ".join(config_notes))
+
     candidates = _candidate_rows(entry, gold, survivors, final_ranks)
     table = pd.DataFrame(candidates)
-    display(Markdown("**2–5. Retrieved candidates, fusion, and observed filtering**"))
+
+    if has_rrf:
+        display(Markdown("**2–5. Retrieved candidates, RRF fusion, and observed filtering**"))
+    elif has_retrieval_scores:
+        display(Markdown("**2–5. Retrieved candidates, fusion, and observed filtering**"))
+    else:
+        display(Markdown("**2–5. Retrieved candidates and fusion (scores not used; all forwarded to LLM)**"))
     display(table)
+
     display(Markdown("**3. Actual graph evidence supplied for every surviving candidate**"))
     context_fields = ["sctid", "fsn", "description", "parents", "grandparents", "children",
                       "finding_sites", "morphologies", "causative_agents", "due_to", "clinical_course", "interprets"]
     context = pd.DataFrame(entry["llm_candidates"]).reindex(columns=context_fields)
-    # Expand only on demand so the full context is available without overwhelming the walkthrough.
     _show_graph_context(entry, context_fields)
-    display(Markdown("**6. Final LLM order and its saved explanations**"))
-    final_table = pd.DataFrame([{**m, "rank": rank, "is_target": normalise_id(m["sctid"]) in gold,
-                                "in_LLM_pool": normalise_id(m["sctid"]) in survivors}
-                               for rank, m in enumerate(entry["matches"], 1)])
+
+    if has_llm_scores:
+        display(Markdown("**6. Final LLM order and its saved explanations (with retrieval scores)**"))
+    else:
+        display(Markdown("**6. Final LLM order and its saved explanations (pure reranking)**"))
+
+    final_rows = []
+    for rank, m in enumerate(entry["matches"], 1):
+        concept = normalise_id(m.get("sctid"))
+        row = {"rank": rank, "sctid": concept, "fsn": m.get("fsn")}
+        if "score" in m and m["score"] is not None:
+            row["score"] = m["score"]
+        if "base_score" in m and m["base_score"] is not None:
+            row["base_score"] = m["base_score"]
+        if "enriched_score" in m and m["enriched_score"] is not None:
+            row["enriched_score"] = m["enriched_score"]
+        if "rrf_score" in m and m["rrf_score"] is not None:
+            row["rrf_score"] = m["rrf_score"]
+        row["reason"] = m.get("reason")
+        row["is_target"] = concept in gold
+        row["in_LLM_pool"] = concept in survivors
+        final_rows.append(row)
+
+    final_table = pd.DataFrame(final_rows)
     with pd.option_context("display.max_colwidth", None):
         display(final_table)
     display(pd.DataFrame([score_ids(final_ids, gold, ks, mrr_depth)]).round(4))
+
     slug = hashlib.sha256(trace["diagnosis_text"].encode()).hexdigest()[:10]
     if candidates and final_ids:
         figure_name = f"{trace['dataset'].lower()}_trace_{slug}"
@@ -637,6 +727,22 @@ def file_info(path: Path):
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
+def _graphrag_config_info() -> dict:
+    """Capture current GraphRAG pipeline configuration for the evaluation manifest."""
+    try:
+        from concept_normalisation import config
+        return {
+            "retrieval_method": getattr(config, "GRAPHRAG_DEFAULT_RETRIEVEAL_METHOD", "unknown"),
+            "use_score": getattr(config, "GRAPHRAG_USE_SCORE", "unknown"),
+            "min_score": getattr(config, "GRAPHRAG_DEFAULT_MIN_SCORE", "unknown"),
+            "top_k": getattr(config, "GRAPHRAG_DEFAULT_TOP_K", "unknown"),
+            "max_llm_results": getattr(config, "GRAPHRAG_DEFAULT_MAX_LLM_RESULTS", "unknown"),
+            "llm_model": getattr(config, "GRAPHRAG_LLM_MODEL_NAME", "unknown"),
+        }
+    except ImportError:
+        return {"note": "config module unavailable at evaluation time"}
+
+
 def export_evaluation(
     exports: dict[str, pd.DataFrame],
     specs: dict,
@@ -656,6 +762,7 @@ def export_evaluation(
         "primary_view": view, "recall_k": ks, "mrr_depth": mrr_depth,
         "matching": "exact ID; stable deduplication; stored order", "methods": METHODS,
         "missing_predictions": "score zero; absent method columns unavailable",
+        "graphrag_configuration": _graphrag_config_info(),
         "truth_join": "Restore source ICD via stable record identity, then ICD-key join with conflict/label validation",
         "inputs": {label: {kind: file_info(spec[kind]) for kind in ["truth", "checkpoint", "log"]}
                    for label, spec in specs.items()},

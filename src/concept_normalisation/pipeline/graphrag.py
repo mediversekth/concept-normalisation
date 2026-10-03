@@ -7,9 +7,11 @@ def run_graphrag(
     text_column: str = "diagnosis_text",
     output_column: str = "algorithm_graphrag_matches",
     top_k: int = 10,
-    min_score: float = 0.94,
+    min_score: float = 0.90,
     checkpoint_path: Path | None = None,
     checkpoint_every: int = 5,
+    log_candidates: bool = True,
+    log_errors: bool = True,
 ):
     result = data.copy()
 
@@ -50,6 +52,8 @@ def run_graphrag(
                 diagnosis=query,
                 top_k=top_k,
                 min_score=min_score,
+                log_candidates=log_candidates,
+                log_errors=log_errors
             )
 
             value = response["matches"]

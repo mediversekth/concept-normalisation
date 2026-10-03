@@ -76,7 +76,7 @@ def build_comparison_table(semantic_data: pd.DataFrame, query_column: str = "tes
         )
 
         graphrag_id, graphrag_text, graphrag_score = _top_match(
-            row.get("algorithm_graphrag_matches", []), "sctid", "fsn", "score"
+            row.get("algorithm_graphrag_matches", []), "sctid", "fsn", "rrf_score"
         )
 
         rows.append({

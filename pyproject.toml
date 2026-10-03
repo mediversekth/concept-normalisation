@@ -16,7 +16,7 @@ dependencies = [
     "transformers",
     "sentence-transformers",
     "elasticsearch",
-    "ollama",
+    "ollama>0.4.9",
     "neo4j",
     "neo4j-graphrag[ollama]",
     "tqdm",
