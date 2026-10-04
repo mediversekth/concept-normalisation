@@ -102,7 +102,8 @@ class ExperimentConfig:
     graphrag_min_score: float = config.GRAPHRAG_DEFAULT_MIN_SCORE
     graphrag_log_candidates: bool = config.GRAPHRAG_LOG_CANDIDATES
     graphrag_log_errors: bool = config.GRAPHRAG_LOG_ERRORS
-    use_score: bool = config.GRAPHRAG_USE_SCORE
+    graphrag_use_score: bool = config.GRAPHRAG_USE_SCORE
+    graphrag_num_workers: int = config.GRAPHRAG_NUM_WORKERS
     fresh_graphrag: bool = False
     
     run_evaluation: bool = True
@@ -501,7 +502,7 @@ def _stage_graphrag_matching(cfg: ExperimentConfig, data: pd.DataFrame) -> pd.Da
     matcher = GraphRAGMatcher(
         embedding_model=cfg.graphrag_embedding_model,
         llm_model=cfg.graphrag_model,
-        use_score=cfg.use_score,
+        use_score=cfg.graphrag_use_score,
         table_name=cfg.table_name
     )
         
@@ -514,7 +515,8 @@ def _stage_graphrag_matching(cfg: ExperimentConfig, data: pd.DataFrame) -> pd.Da
         min_score=cfg.graphrag_min_score,
         checkpoint_path=cfg.checkpoint_path,
         log_candidates=cfg.graphrag_log_candidates,
-        log_errors=cfg.graphrag_log_errors
+        log_errors=cfg.graphrag_log_errors,
+        max_workers=cfg.graphrag_num_workers,
     )
 
     _checkpoint(cfg, data, "GRAPHRAG ALGORITHM")

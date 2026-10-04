@@ -15,6 +15,8 @@ from concept_normalisation.graphrag.graphrag_queries import (
     build_retrieval_query,
     build_prompt
 )
+from threading import Lock
+import threading
 
 class GraphRAGMatcher:
     """A matcher for performing graph-based retrieval and reranking of SNOMED CT concepts."""
@@ -36,6 +38,9 @@ class GraphRAGMatcher:
         self.log_dir=log_dir
         self.table_name=table_name
         self.use_score=use_score
+        self.log_lock = Lock()
+        self._thread_local = threading.local()
+        self._llm_model = llm_model
 
         self.driver = GraphDatabase.driver(
             neo4j_uri, 
@@ -44,22 +49,6 @@ class GraphRAGMatcher:
 
         self.embedder = SentenceTransformerEmbeddings(
             model=embedding_model,
-        )
-
-        self.llm = OllamaLLM(
-            model_name=llm_model,
-            host=config.GRAPHRAG_DEFAULT_HOST,
-            model_params={
-                "options": {
-                    "temperature": 0.0,
-                    "num_ctx": config.GRAPHRAG_DEFAULT_CONTEXT_SIZE,
-                    "seed": config.GRAPHRAG_DEFAULT_SEED,
-                },
-                "format": "json",
-                "keep_alive": "30m",
-                "think": False
-            },
-            timeout=900
         )
 
         self.base_retriever = HybridCypherRetriever(
@@ -82,6 +71,27 @@ class GraphRAGMatcher:
             neo4j_database=neo4j_database,
         )
 
+    def _get_llm(self) -> OllamaLLM:
+        """Return one OllamaLLM instance per worker thread."""
+
+        if not hasattr(self._thread_local, "llm"):
+            self._thread_local.llm = OllamaLLM(
+                model_name=self._llm_model,
+                host=config.GRAPHRAG_DEFAULT_HOST,
+                model_params={
+                    "options": {
+                        "temperature": 0.0,
+                        "num_ctx": config.GRAPHRAG_DEFAULT_CONTEXT_SIZE,
+                        "seed": config.GRAPHRAG_DEFAULT_SEED,
+                    },
+                    "format": "json",
+                    "keep_alive": "30m",
+                    "think": False,
+                },
+                timeout=900,
+            )
+
+        return self._thread_local.llm
 
     @staticmethod
     def _result_formatter(record) -> RetrieverResultItem:
@@ -119,8 +129,18 @@ class GraphRAGMatcher:
     def _clean_query(self, text: str) -> str:
         """Do simple cleaning of query text"""
         text = str(text)
-        # Remove '/', otherwise it won't be able to run the query
-        text = text.replace("/", "or")
+
+        # A slash usually expresses alternatives in clinical text.
+        text = text.replace("/", " or ")
+
+        # Remove Lucene query syntax characters.
+        text = re.sub(r'[+\-!(){}\[\]^"~*?:\\]', " ", text)
+
+        # Remove Lucene boolean operators if they occur literally.
+        text = text.replace("&&", " ")
+        text = text.replace("||", " ")
+
+        # Normalize whitespace.
         text = re.sub(r"\s+", " ", text)
         return text.strip()
 
@@ -163,6 +183,8 @@ class GraphRAGMatcher:
             reverse=True,
         )
 
+        candidates = candidates[:15]  # Limit to top 15 candidates for LLM reranking
+
         # Step 2: If a min_score is given, filter out results below min_score
         if min_score is None:
             llm_candidates = list(candidates)
@@ -188,7 +210,7 @@ class GraphRAGMatcher:
         # Step 3: LLM reranking. It sees all surviving candidates but should return
         # no more than configured maximum number of candidates.
         prompt = build_prompt(cleaned_diagnosis, llm_candidates, config.GRAPHRAG_DEFAULT_MAX_LLM_RESULTS, use_score=self.use_score)
-        response = self.llm.invoke(prompt)
+        response = self._get_llm().invoke(prompt)
 
         try:
             # Load response as json, retain only MAX RESULTS, 
@@ -319,35 +341,37 @@ class GraphRAGMatcher:
         logs_dir = Path(self.log_dir) / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
 
-        with (logs_dir / "graphrag_errors.jsonl").open("a",encoding="utf-8") as f:
-            json.dump(
-                {
-                    "timestamp": datetime.now().isoformat(),
-                    "diagnosis": diagnosis,
-                    "error": error,
-                    "raw_answer": answer,
-                },
-                f,
-                ensure_ascii=False,
-            )
-            f.write("\n")
+        with self.log_lock:
+            with (logs_dir / "graphrag_errors.jsonl").open("a",encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "timestamp": datetime.now().isoformat(),
+                        "diagnosis": diagnosis,
+                        "error": error,
+                        "raw_answer": answer,
+                    },
+                    f,
+                    ensure_ascii=False,
+                )
+                f.write("\n")
 
     def _log_candidates(self, diagnosis, candidates, llm_candidates, matches):
         logs_dir = Path(self.log_dir) / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
 
-        with (logs_dir / f"{self.table_name}_graphrag_candidates.jsonl").open("a",encoding="utf-8") as f:
-            json.dump(
-                {
-                    "timestamp": datetime.now().isoformat(),
-                    "nr_of_candidates": len(candidates),
-                    "diagnosis": diagnosis,
-                    "candidates": candidates,
-                    "llm_candidates": llm_candidates,
-                    "matches": matches,
-                },
-                f,
-                ensure_ascii=False,
-            )
-            f.write("\n")
+        with self.log_lock:
+            with (logs_dir / f"{self.table_name}_graphrag_candidates.jsonl").open("a",encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "timestamp": datetime.now().isoformat(),
+                        "nr_of_candidates": len(candidates),
+                        "diagnosis": diagnosis,
+                        "candidates": candidates,
+                        "llm_candidates": llm_candidates,
+                        "matches": matches,
+                    },
+                    f,
+                    ensure_ascii=False,
+                )
+                f.write("\n")
         

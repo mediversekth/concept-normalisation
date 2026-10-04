@@ -8,37 +8,59 @@ import json
 
 def build_retrieval_query(use_score: bool = True) -> str:
     return f"""
-OPTIONAL MATCH (node)-[:ISA]->(parent:ObjectConcept)
-OPTIONAL MATCH (parent)-[:ISA]->(grandparent:ObjectConcept)
-
-OPTIONAL MATCH (child:ObjectConcept)-[:ISA]->(node)
-
-OPTIONAL MATCH (node)-[:HAS_ROLE_GROUP]->(rg:RoleGroup)
-
-OPTIONAL MATCH (rg)-[:FINDING_SITE]->(site:ObjectConcept)
-OPTIONAL MATCH (rg)-[:ASSOCIATED_MORPHOLOGY]->(morph:ObjectConcept)
-OPTIONAL MATCH (rg)-[:CAUSATIVE_AGENT]->(agent:ObjectConcept)
-OPTIONAL MATCH (rg)-[:DUE_TO]->(cause:ObjectConcept)
-OPTIONAL MATCH (rg)-[:CLINICAL_COURSE]->(course:ObjectConcept)
-OPTIONAL MATCH (rg)-[:INTERPRETS]->(interprets:ObjectConcept)
-
 RETURN
     node.sctid AS sctid,
     node.FSN AS fsn,
     node.embedding_text AS description,
     {"score," if use_score else ""}
 
-    collect(DISTINCT parent.FSN) AS parents,
-    collect(DISTINCT grandparent.FSN) AS grandparents,
+    COLLECT {{
+        MATCH (node)-[:ISA]->(parent:ObjectConcept)
+        RETURN parent.FSN
+        LIMIT 5
+    }} AS parents,
+    COLLECT {{
+        MATCH (node)-[:ISA]->(parent:ObjectConcept)-[:ISA]->(grandparent:ObjectConcept)
+        RETURN DISTINCT grandparent.FSN
+        LIMIT 5
+    }} AS grandparents,
 
-    collect(DISTINCT child.FSN) AS children,
+    COLLECT {{
+        MATCH (child:ObjectConcept)-[:ISA]->(node)
+        RETURN DISTINCT child.FSN
+        LIMIT 10
+    }} AS children,
 
-    collect(DISTINCT site.FSN) AS finding_sites,
-    collect(DISTINCT morph.FSN) AS morphologies,
-    collect(DISTINCT agent.FSN) AS causative_agents,
-    collect(DISTINCT cause.FSN) AS due_to,
-    collect(DISTINCT course.FSN) AS clinical_course,
-    collect(DISTINCT interprets.FSN) AS interprets
+    COLLECT {{
+        MATCH (node)-[:HAS_ROLE_GROUP]->(:RoleGroup)-[:FINDING_SITE]->(site:ObjectConcept)
+        RETURN DISTINCT site.FSN
+        LIMIT 3
+    }} AS finding_sites,
+    COLLECT {{
+        MATCH (node)-[:HAS_ROLE_GROUP]->(:RoleGroup)-[:ASSOCIATED_MORPHOLOGY]->(morph:ObjectConcept)
+        RETURN DISTINCT morph.FSN
+        LIMIT 3
+    }} AS morphologies,
+    COLLECT {{
+        MATCH (node)-[:HAS_ROLE_GROUP]->(:RoleGroup)-[:CAUSATIVE_AGENT]->(agent:ObjectConcept)
+        RETURN DISTINCT agent.FSN
+        LIMIT 3
+    }} AS causative_agents,
+    COLLECT {{
+        MATCH (node)-[:HAS_ROLE_GROUP]->(:RoleGroup)-[:DUE_TO]->(cause:ObjectConcept)
+        RETURN DISTINCT cause.FSN
+        LIMIT 3
+    }} AS due_to,
+    COLLECT {{
+        MATCH (node)-[:HAS_ROLE_GROUP]->(:RoleGroup)-[:CLINICAL_COURSE]->(course:ObjectConcept)
+        RETURN DISTINCT course.FSN
+        LIMIT 3
+    }} AS clinical_course,
+    COLLECT {{
+        MATCH (node)-[:HAS_ROLE_GROUP]->(:RoleGroup)-[:INTERPRETS]->(interprets:ObjectConcept)
+        RETURN DISTINCT interprets.FSN
+        LIMIT 3
+    }} AS interprets
 """
 
 # ==================================================================

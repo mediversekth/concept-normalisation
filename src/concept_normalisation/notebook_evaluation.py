@@ -51,16 +51,55 @@ def resolve_data_directory(root: Path) -> Path:
 
 
 def dataset_specs(data_dir: Path) -> dict:
-    """Return separate source, checkpoint, and trace paths for ICD9 and ICD10."""
+    """
+    Discover evaluation datasets from pipeline input CSVs.
+
+    Known ICD datasets keep their ICD-code join semantics. Any additional CSV
+    with a matching pipeline checkpoint is treated as a direct SNOMED-labelled
+    dataset and evaluated from its diagnosis text + `snomed` labels.
+
+    Expected artifact naming:
+        data/<stem>.csv
+        data/output/<stem>_pipeline_checkpoint.parquet
+        data/logs/<stem>_graphrag_candidates.jsonl
+
+    This means files such as `snomed_challenge_50.csv` are picked up
+    automatically once their matching pipeline checkpoint exists.
+    """
+    output_dir = data_dir / "output"
+    log_dir = data_dir / "logs"
+
+    known = {
+        "diagnosis_icd9_snomed": ("ICD9", "icd9"),
+        "diagnosis_icd10_snomed": ("ICD10", "icd10"),
+    }
+
     specs = {}
-    for label, code in [("ICD9", "icd9"), ("ICD10", "icd10")]:
-        stem = f"diagnosis_{code}_snomed"
+
+    for truth_path in sorted(data_dir.glob("*.csv")):
+        stem = truth_path.stem
+        checkpoint = output_dir / f"{stem}_pipeline_checkpoint.parquet"
+
+        # Only include datasets that have actually been run through the pipeline.
+        if not checkpoint.exists():
+            continue
+
+        if stem in known:
+            label, code = known[stem]
+            dataset_type = "icd"
+        else:
+            label = stem
+            code = None
+            dataset_type = "direct_snomed"
+
         specs[label] = {
+            "type": dataset_type,
             "code": code,
-            "truth": data_dir / f"{stem}.csv",
-            "checkpoint": data_dir / "output" / f"{stem}_pipeline_checkpoint.parquet",
-            "log": data_dir / "logs" / f"{stem}_graphrag_candidates.jsonl",
+            "truth": truth_path,
+            "checkpoint": checkpoint,
+            "log": log_dir / f"{stem}_graphrag_candidates.jsonl",
         }
+
     return specs
 
 
@@ -216,6 +255,71 @@ def attach_gold(data, truth, code_column):
     return data
 
 
+
+def attach_direct_snomed_gold(data, truth):
+    """
+    Attach gold labels for datasets whose source CSV already contains SNOMED IDs.
+
+    The cohort is keyed by diagnosis text rather than an ICD code. Multiple
+    source rows with the same diagnosis text are allowed and become a set of
+    valid SNOMED targets.
+    """
+    truth = truth.copy()
+    data = data.copy().reset_index(drop=True)
+
+    if "snomed" not in truth:
+        raise ValueError("Direct SNOMED dataset must contain a 'snomed' column.")
+
+    if "diagnosis_text" not in truth:
+        if "diagnosisstring" not in truth:
+            raise ValueError(
+                "Direct SNOMED dataset must contain 'diagnosisstring' or 'diagnosis_text'."
+            )
+        truth["diagnosis_text"] = truth["diagnosisstring"].str.replace(
+            "|", " - ", regex=False
+        )
+
+    if "diagnosis_text" not in data:
+        if "diagnosisstring" not in data:
+            raise ValueError(
+                "Checkpoint must contain 'diagnosisstring' or 'diagnosis_text'."
+            )
+        data["diagnosis_text"] = data["diagnosisstring"].str.replace(
+            "|", " - ", regex=False
+        )
+
+    truth["diagnosis_text"] = truth["diagnosis_text"].map(normalise_id)
+    data["diagnosis_text"] = data["diagnosis_text"].map(normalise_id)
+
+    if truth["diagnosis_text"].isna().any() or data["diagnosis_text"].isna().any():
+        raise ValueError("Missing diagnosis text; cannot define the evaluation cohort.")
+
+    truth["gold_single"] = truth["snomed"].map(gold_set)
+
+    mapping = (
+        truth.groupby("diagnosis_text", sort=False)["gold_single"]
+        .agg(lambda values: frozenset().union(*values))
+    )
+
+    data["gold"] = data["diagnosis_text"].map(mapping).map(
+        lambda x: x if isinstance(x, frozenset) else frozenset()
+    )
+
+    if "snomed" in data:
+        checkpoint_gold = data["snomed"].map(gold_set)
+        for saved, gold in zip(checkpoint_gold, data["gold"]):
+            if saved and not saved.issubset(gold):
+                raise ValueError(
+                    "Checkpoint labels disagree with source labels; "
+                    "check dataset/version alignment."
+                )
+
+    data["query_key"] = data["diagnosis_text"]
+    data["row_id"] = np.arange(len(data))
+    data["icd_key_restored"] = False
+
+    return data
+
 def load_datasets(specs: dict, mrr_depth: int = 5):
     """Load labelled cohorts and return datasets, label audit, and prediction coverage."""
     datasets, audits, coverage_rows = {}, [], []
@@ -225,7 +329,10 @@ def load_datasets(specs: dict, mrr_depth: int = 5):
                 raise FileNotFoundError(f"Missing {label} {required}: {spec[required]}. Run the matching pipeline first.")
         truth = pd.read_csv(spec["truth"], dtype=str, keep_default_na=False)
         raw = pd.read_parquet(spec["checkpoint"])
-        data = attach_gold(raw, truth, spec["code"])
+        if spec.get("type") == "direct_snomed" or spec.get("code") is None:
+            data = attach_direct_snomed_gold(raw, truth)
+        else:
+            data = attach_gold(raw, truth, spec["code"])
         labelled = data[data.gold.map(bool)].copy()
         if labelled.empty:
             raise ValueError(f"{label} has no labelled evaluation rows.")
@@ -256,7 +363,8 @@ def load_datasets(specs: dict, mrr_depth: int = 5):
 
 def plot_target_cardinality(datasets: dict, output_dir: Path):
     """Plot target-set sizes separately for each dataset."""
-    fig, axes = plt.subplots(1, 2, figsize=(12, 3.5), layout="constrained")
+    nr_of_datasets = len(datasets)
+    fig, axes = plt.subplots(1, nr_of_datasets, figsize=(12, 3.5), layout="constrained")
     for ax, (label, data) in zip(axes, datasets.items()):
         counts = data.drop_duplicates("query_key").gold.map(len).value_counts().sort_index()
         ax.bar(counts.index.astype(str), counts.values, color="#4c78a8")
@@ -315,9 +423,11 @@ def plot_method_comparison(
     output_dir: Path,
 ):
     """Plot the three headline metrics with GraphRAG highlighted."""
+    nr_of_datasets = len(scores.dataset.unique())
+
     plot = scores[scores.dataset.eq(label) & scores.view.eq(view)].set_index("method")
     order = [method for method in METHODS if method in plot.index]
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5), sharey=True, layout="constrained")
+    fig, axes = plt.subplots(1, nr_of_datasets, figsize=(15, 4.5), sharey=True, layout="constrained")
     for ax, metric in zip(axes, ["Top-1 Accuracy", f"MRR@{mrr_depth}", f"Recall@{max(ks)}"]):
         values = plot.loc[order, metric]
         bars = ax.barh(order, values, color=[COLORS[m] for m in order])
@@ -338,7 +448,9 @@ def plot_recall_curves(
     output_dir: Path,
 ):
     """Plot each method and the target-set recall ceiling."""
-    fig, axes = plt.subplots(1, 2, figsize=(13, 4.5), sharey=True, layout="constrained")
+    nr_of_datasets = len(datasets)
+
+    fig, axes = plt.subplots(1, nr_of_datasets, figsize=(13, 4.5), sharey=True, layout="constrained")
     for ax, (label, data) in zip(axes, datasets.items()):
         table = scores[scores.dataset.eq(label) & scores.view.eq(view)]
         for _, row in table.iterrows():
@@ -371,51 +483,119 @@ def baseline_differences(scores: pd.DataFrame, ks: list[int], mrr_depth: int, vi
 
 
 def clean_query(text):
-    """Mirror the matcher cleaning used to associate saved logs with queries."""
-    return re.sub(r"\s+", " ", str(text).replace("/", "or")).strip()
+    """Mirror GraphRAGMatcher._clean_query for matching saved logs."""
+    text = str(text)
+
+    text = text.replace("/", " or ")
+    text = re.sub(r'[+\-!(){}\[\]^"~*?:\\]', " ", text)
+    text = text.replace("&&", " ")
+    text = text.replace("||", " ")
+    text = re.sub(r"\s+", " ", text)
+
+    return text.strip()
 
 
 def load_traces(datasets: dict, specs: dict):
     """Return consistent GraphRAG traces and coverage; missing logs are audited, not fatal."""
     trace_records, trace_audit = [], []
+
     for label, data in datasets.items():
         path = specs[label]["log"]
         logs_by_query = {}
+
         if path.exists():
-            for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for line_no, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), 1
+            ):
                 if not line.strip():
                     continue
+
                 entry = json.loads(line)
                 entry["log_line"] = line_no
-                logs_by_query.setdefault(entry["diagnosis"], []).append(entry)
+
+                logged_query = clean_query(entry["diagnosis"])
+                logs_by_query.setdefault(logged_query, []).append(entry)
+
         cleaned = data.diagnosis_text.map(clean_query)
-        collisions = data.assign(cleaned=cleaned).groupby("cleaned").diagnosis_text.nunique()
+
+        collisions = (
+            data.assign(cleaned=cleaned)
+            .groupby("cleaned")
+            .diagnosis_text
+            .nunique()
+        )
+
         column, key = METHODS["GraphRAG"]
+
         for query_key, group in data.groupby("query_key", sort=False):
-            diagnosis = query_key[0]
+
+            # ICD datasets use (diagnosis_text, code).
+            # Direct-SNOMED datasets use diagnosis_text directly.
+            diagnosis = (
+                query_key[0]
+                if isinstance(query_key, tuple)
+                else query_key
+            )
+
+            cleaned_diagnosis = clean_query(diagnosis)
+
             status = "no matching log"
             entry = None
+
             if column not in group:
                 status = "GraphRAG unavailable"
-            elif collisions.get(clean_query(diagnosis), 0) > 1:
+
+            elif collisions.get(cleaned_diagnosis, 0) > 1:
                 status = "ambiguous cleaned query"
+
             else:
-                predictions = {tuple(candidate_ids(v, key)) for v in group[column]}
+                predictions = {
+                    tuple(candidate_ids(v, key))
+                    for v in group[column]
+                }
+
                 if len(predictions) != 1:
                     status = "multiple checkpoint outputs for query"
+
                 else:
-                    matching = [e for e in logs_by_query.get(clean_query(diagnosis), [])
-                                if tuple(candidate_ids(e.get("matches"), key)) in predictions
-                                and "llm_candidates" in e and "candidates" in e]
+                    matching = [
+                        e
+                        for e in logs_by_query.get(cleaned_diagnosis, [])
+                        if tuple(candidate_ids(e.get("matches"), key))
+                        in predictions
+                        and "llm_candidates" in e
+                        and "candidates" in e
+                    ]
+
                     if matching:
-                        entry = max(matching, key=lambda e: (e.get("timestamp", ""), e["log_line"]))
+                        entry = max(
+                            matching,
+                            key=lambda e: (
+                                e.get("timestamp", ""),
+                                e["log_line"],
+                            ),
+                        )
                         status = "matched final IDs"
-            trace_audit.append({"dataset": label, "query_key": query_key, "diagnosis_text": diagnosis,
-                                "status": status, "row_count": len(group)})
+
+            trace_audit.append({
+                "dataset": label,
+                "query_key": query_key,
+                "diagnosis_text": diagnosis,
+                "status": status,
+                "row_count": len(group),
+            })
+
             if entry is not None:
-                trace_records.append({"dataset": label, "query_key": query_key,
-                                      "diagnosis_text": diagnosis, "gold": group.gold.iloc[0], "entry": entry})
+                trace_records.append({
+                    "dataset": label,
+                    "query_key": query_key,
+                    "diagnosis_text": diagnosis,
+                    "gold": group.gold.iloc[0],
+                    "entry": entry,
+                })
+
     trace_coverage = pd.DataFrame(trace_audit)
+
     return trace_records, trace_coverage
 
 
