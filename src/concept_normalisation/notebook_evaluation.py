@@ -364,7 +364,7 @@ def load_datasets(specs: dict, mrr_depth: int = 5):
 def plot_target_cardinality(datasets: dict, output_dir: Path):
     """Plot target-set sizes separately for each dataset."""
     nr_of_datasets = len(datasets)
-    fig, axes = plt.subplots(1, nr_of_datasets, figsize=(12, 3.5), layout="constrained")
+    fig, axes = plt.subplots(1, nr_of_datasets, figsize=(nr_of_datasets * 4, 3.5), layout="constrained")
     for ax, (label, data) in zip(axes, datasets.items()):
         counts = data.drop_duplicates("query_key").gold.map(len).value_counts().sort_index()
         ax.bar(counts.index.astype(str), counts.values, color="#4c78a8")
@@ -423,11 +423,9 @@ def plot_method_comparison(
     output_dir: Path,
 ):
     """Plot the three headline metrics with GraphRAG highlighted."""
-    nr_of_datasets = len(scores.dataset.unique())
-
     plot = scores[scores.dataset.eq(label) & scores.view.eq(view)].set_index("method")
     order = [method for method in METHODS if method in plot.index]
-    fig, axes = plt.subplots(1, nr_of_datasets, figsize=(15, 4.5), sharey=True, layout="constrained")
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4.5), sharey=True, layout="constrained")
     for ax, metric in zip(axes, ["Top-1 Accuracy", f"MRR@{mrr_depth}", f"Recall@{max(ks)}"]):
         values = plot.loc[order, metric]
         bars = ax.barh(order, values, color=[COLORS[m] for m in order])
@@ -450,7 +448,7 @@ def plot_recall_curves(
     """Plot each method and the target-set recall ceiling."""
     nr_of_datasets = len(datasets)
 
-    fig, axes = plt.subplots(1, nr_of_datasets, figsize=(13, 4.5), sharey=True, layout="constrained")
+    fig, axes = plt.subplots(1, nr_of_datasets, figsize=(nr_of_datasets * 4, 4.5), sharey=True, layout="constrained")
     for ax, (label, data) in zip(axes, datasets.items()):
         table = scores[scores.dataset.eq(label) & scores.view.eq(view)]
         for _, row in table.iterrows():

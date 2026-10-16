@@ -128,12 +128,12 @@ GRAPHRAG_VECTOR_INDEX_NAME = "snomed_concept_embeddings"
 # ============================================================
 
 GRAPHRAG_LLM_MODEL_NAME = "qwen3.8:27b"
-GRAPHRAG_DEFAULT_HOST= "https://graphrag-llm.app.cloud.cbh.kth.se"
+GRAPHRAG_DEFAULT_HOST= "http://localhost:11435"
 GRAPHRAG_DEFAULT_SEED = 42
-GRAPHRAG_DEFAULT_CONTEXT_SIZE = 64000
+GRAPHRAG_DEFAULT_CONTEXT_SIZE = 16384
 GRAPHRAG_DEFAULT_MAX_LLM_RESULTS = 5   # Maximum number of candidates returned by the LLM
 GRAPHRAG_DEFAULT_MIN_SCORE = 0.90
-GRAPHRAG_NUM_WORKERS = 1
+GRAPHRAG_NUM_WORKERS = 5
 GRAPHRAG_USE_SCORE = True
 
 # Options: "BASE_EMBEDDING", "ENRICHED_EMBEDDING", "BOTH"

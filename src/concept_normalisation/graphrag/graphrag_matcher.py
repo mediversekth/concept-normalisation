@@ -186,16 +186,16 @@ class GraphRAGMatcher:
         candidates = candidates[:15]  # Limit to top 15 candidates for LLM reranking
 
         # Step 2: If a min_score is given, filter out results below min_score
-        if min_score is None:
-            llm_candidates = list(candidates)
-        else:
+        if min_score is not None and self.use_score:
             llm_candidates = [
                 candidate
                 for candidate in candidates
                 if candidate.get("score") is None
                 or float(candidate["score"]) >= min_score
             ]
-
+        else:
+            llm_candidates = list(candidates)
+            
         # Nothing survived retrieval/filtering, so there is nothing to rerank.
         if not llm_candidates:
             return {
@@ -211,6 +211,7 @@ class GraphRAGMatcher:
         # no more than configured maximum number of candidates.
         prompt = build_prompt(cleaned_diagnosis, llm_candidates, config.GRAPHRAG_DEFAULT_MAX_LLM_RESULTS, use_score=self.use_score)
         response = self._get_llm().invoke(prompt)
+        answer = {"results": []}
 
         try:
             # Load response as json, retain only MAX RESULTS, 
@@ -286,25 +287,28 @@ class GraphRAGMatcher:
             if sctid not in fused:
                 fused[sctid] = {
                     **candidate,
-                    "base_score": None,
-                    "enriched_score": None,
                     "base_rank": None,
                     "enriched_rank": None,
                     "rrf_score": 0.0,
                     "found_by": [],
                 }
 
-            # Keep the original retriever information
-            fused[sctid][rank_key] = rank
-            fused[sctid]["score"] = max(candidate.get("score"), fused[sctid].get("score", 0.0))
+                if use_score:
+                    fused[sctid].update({
+                        "score": None,
+                        "base_score": None,
+                        "enriched_score": None,
+                    })
 
             if use_score:
+                fused[sctid]["score"] = max(candidate.get("score", 0.0), fused[sctid].get("score", 0.0))
                 fused[sctid][score_key] = candidate.get("score")
 
             if method not in fused[sctid]["found_by"]:
-                fused[sctid]["found_by"].append(method)
+                fused[sctid]["found_by"].append(method) 
 
             # Reciprocal Rank Fusion contribution
+            fused[sctid][rank_key] = rank
             fused[sctid]["rrf_score"] += 1 / (rrf_k + rank)
 
         return fused

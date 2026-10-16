@@ -87,6 +87,16 @@ def build_prompt(
         """
     )
 
+    score_instructions = (
+    """
+The original base_score and enriched_score come from different retrieval
+methods and are not necessarily directly comparable. Treat them as supporting
+evidence only.
+"""
+        if use_score
+        else ""
+    )
+
     return f"""
 You are reranking SNOMED CT concepts for concept normalisation.
 
@@ -105,9 +115,7 @@ The candidates have already been combined using Reciprocal Rank Fusion (RRF).
 The RRF score reflects how highly a candidate was ranked across the retrieval
 methods.
 
-The original base_score and enriched_score come from different retrieval
-methods and are not necessarily directly comparable. Treat them as supporting
-evidence only. A candidate with a lower raw retrieval score may still be the
+{score_instructions} A candidate with a lower raw retrieval score may still be the
 best match if its meaning and graph context better match the diagnosis.
 
 Select and rank the TOP {max_results} candidates from most likely to least
@@ -119,11 +127,11 @@ Rules:
 - Do not return contextual concepts unless they also appear as a candidate.
 - Do not simply preserve the RRF ranking.
 - Consider the diagnosis string, candidate description, hierarchy,
-  relationships, retrieval ranks, RRF score, and original retrieval scores.
+  relationships, retrieval ranks, RRF score.
 - Prefer semantic and clinical correctness over retrieval score alone.
 - Do not assume clinical information that is not present in the diagnosis string.
 - Copy the exact sctid, fsn, and retrieval values from the candidate.
-- Do not modify or recalculate any retrieval scores.
+- Do not modify or recalculate any retrieval values.
 
 Return ONLY valid JSON with exactly this structure:
 
