@@ -295,9 +295,9 @@ class GraphRAGMatcher:
 
                 if use_score:
                     fused[sctid].update({
-                        "score": None,
-                        "base_score": None,
-                        "enriched_score": None,
+                        "score": 0.0,
+                        "base_score": 0.0,
+                        "enriched_score": 0.0,
                     })
 
             if use_score:
